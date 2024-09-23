@@ -1,0 +1,22 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "matrix.NET", "matrix.NET\matrix.NET.csproj", "{BB34D3B9-8225-4C6F-BC95-0F591D7335DF}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ConsoleClient", "ConsoleClient\ConsoleClient.csproj", "{91AA426C-8BEC-48A7-8C41-3626A0307DE7}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{BB34D3B9-8225-4C6F-BC95-0F591D7335DF}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{BB34D3B9-8225-4C6F-BC95-0F591D7335DF}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{BB34D3B9-8225-4C6F-BC95-0F591D7335DF}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{BB34D3B9-8225-4C6F-BC95-0F591D7335DF}.Release|Any CPU.Build.0 = Release|Any CPU
+		{91AA426C-8BEC-48A7-8C41-3626A0307DE7}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{91AA426C-8BEC-48A7-8C41-3626A0307DE7}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{91AA426C-8BEC-48A7-8C41-3626A0307DE7}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{91AA426C-8BEC-48A7-8C41-3626A0307DE7}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal
