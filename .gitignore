@@ -349,3 +349,9 @@ MigrationBackup/
 
 # Ionide (cross platform F# VS Code tools) working folder
 .ionide/
+
+# Local test client, not part of this repository
+src/matrix.NET/ConsoleClient/
+
+# Local settings for tests against a real homeserver (contains credentials)
+src/matrix.NET/matrix.NET.Tests/testsettings.json

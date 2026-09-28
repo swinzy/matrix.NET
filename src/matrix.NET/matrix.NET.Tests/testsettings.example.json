@@ -1,0 +1,6 @@
+{
+  "Homeserver": "https://matrix.example.org/",
+  "User": "cheeky_monkey",
+  "Password": "change-me",
+  "DeviceId": "MATRIXDOTNETTEST"
+}
