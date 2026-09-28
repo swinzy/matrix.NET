@@ -52,4 +52,14 @@ public class LoginIntegrationTests
         Assert.Equal(HttpStatusCode.Forbidden, exception.StatusCode);
         Assert.Equal("M_FORBIDDEN", exception.ErrorCode);
     }
+
+    [Fact]
+    public async Task GetSupportedLoginTypesAsync_IncludesPasswordLogin()
+    {
+        var server = CreateServer();
+
+        var flows = await server.GetSupportedLoginTypesAsync();
+
+        Assert.Contains(flows, flow => flow.Type == "m.login.password");
+    }
 }

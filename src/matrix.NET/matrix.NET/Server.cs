@@ -24,10 +24,12 @@ public class Server
         _client = client;
     }
 
-    public async Task GetSupportedLoginTypeAsync()
+    public async Task<List<LoginFlow>> GetSupportedLoginTypesAsync()
     {
         var response = await _client.GetAsync("/_matrix/client/v3/login");
-        Console.WriteLine(await response.Content.ReadAsStringAsync());
+        await EnsureSuccessAsync(response);
+        var flows = await response.Content.ReadFromJsonAsync<LoginFlowsResponse>(JsonOptions);
+        return flows?.Flows ?? [];
     }
 
     public async Task<LoginResponse> LoginAsync(LoginRequest request)
@@ -56,4 +58,6 @@ public class Server
     }
 
     private record ErrorResponse(string Errcode, string? Error);
+
+    private record LoginFlowsResponse(List<LoginFlow>? Flows);
 }
