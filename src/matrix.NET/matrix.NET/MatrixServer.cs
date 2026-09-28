@@ -4,7 +4,7 @@ using System.Text.Json.Serialization;
 
 namespace TeamBanana.MatrixDotNet;
 
-public class Server
+public class MatrixServer
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -14,12 +14,12 @@ public class Server
 
     private readonly HttpClient _client;
 
-    public Server(Uri baseUri)
+    public MatrixServer(Uri baseUri)
         : this(new HttpClient { BaseAddress = baseUri })
     {
     }
 
-    public Server(HttpClient client)
+    public MatrixServer(HttpClient client)
     {
         _client = client;
     }

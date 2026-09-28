@@ -9,11 +9,11 @@ public class LoginIntegrationTests
 {
     private readonly TestSettings _settings = TestSettings.Load();
 
-    private Server CreateServer()
+    private MatrixServer CreateServer()
     {
         Assert.SkipUnless(_settings.IsConfigured,
             "Real homeserver not configured; see testsettings.example.json");
-        return new Server(new Uri(_settings.Homeserver!));
+        return new MatrixServer(new Uri(_settings.Homeserver!));
     }
 
     [Fact]

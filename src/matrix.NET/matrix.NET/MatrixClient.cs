@@ -1,6 +1,6 @@
 namespace TeamBanana.MatrixDotNet;
 
-public class Client
+public class MatrixClient
 {
     
 }

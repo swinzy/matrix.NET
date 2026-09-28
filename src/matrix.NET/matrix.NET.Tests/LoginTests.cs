@@ -5,7 +5,7 @@ namespace TeamBanana.MatrixDotNet.Tests;
 
 public class LoginTests
 {
-    private static Server CreateServer(StubHttpMessageHandler handler) =>
+    private static MatrixServer CreateServer(StubHttpMessageHandler handler) =>
         new(new HttpClient(handler) { BaseAddress = new Uri("https://matrix.example.org/") });
 
     private static LoginRequest PasswordLogin() => new()
