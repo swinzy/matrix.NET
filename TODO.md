@@ -25,6 +25,7 @@ adds the rest of what it requires of Web, Desktop and Mobile clients.
 - [ ] Authenticated requests (`Authorization: Bearer` access token)
 - [ ] Current account information (`GET /account/whoami`)
 - [ ] Logout (`POST /logout`)
+- [ ] Refreshing access tokens (`POST /refresh`), automatic by default
 - [ ] Transaction identifiers for idempotent sends
 - [ ] Sync: initial and incremental (`GET /sync` with `since` and `timeout`)
 - [ ] List joined rooms (`GET /joined_rooms`)
@@ -47,7 +48,6 @@ adds the rest of what it requires of Web, Desktop and Mobile clients.
 - [ ] OAuth 2.0 API (`GET /auth_metadata`, authorisation code flow); servers that only
       support OAuth 2.0 reject legacy login with `M_UNRECOGNIZED`
 - [ ] Token login (`m.login.token`)
-- [ ] Refreshing access tokens (`POST /refresh`)
 - [ ] Soft logout (`M_UNKNOWN_TOKEN` with `soft_logout`)
 - [ ] Logout all devices (`POST /logout/all`)
 - [ ] Third-party (`m.id.thirdparty`) and phone (`m.id.phone`) identifiers

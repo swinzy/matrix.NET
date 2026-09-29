@@ -355,3 +355,6 @@ src/matrix.NET/ConsoleClient/
 
 # Local settings for tests against a real homeserver (contains credentials)
 src/matrix.NET/matrix.NET.Tests/testsettings.json
+
+# Personal dev notes, not for others
+DEVTODO.md

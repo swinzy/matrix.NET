@@ -43,23 +43,39 @@ and is not part of the repository.
 | `LoginFlow` | One entry of `GET /login`'s `flows` |
 | `IIdentifier` / `UserIdentifier` | User identifier objects (`m.id.user`) |
 | `MatrixException` | A Matrix error response (`errcode`, `error`) or a non-Matrix HTTP failure |
+| `MatrixErrorCodes` | Constants for every error code defined by the spec, for exception filters |
+| `Transport.MatrixTransport` (internal) | The single path every request goes through (D9, D16) |
+| `Transport.AuthRequirement` (internal) | Whether an endpoint needs an access token: `None`, `Optional` or `Required` |
 
 ### Request pipeline
 
-`MatrixServer` wraps a single `HttpClient`. Every call follows the same steps:
+Public types never touch `HttpClient` directly. Each endpoint method makes one
+`MatrixTransport.SendAsync` call, passing the HTTP method, a relative path such as
+`_matrix/client/v3/login`, an optional body, and its `AuthRequirement`. The transport then:
 
-1. Serialise the request with the shared `JsonSerializerOptions`: `snake_case` property
-   names, and `null` properties omitted.
-2. Send it to the path under `/_matrix/client/v3/`.
-3. `EnsureSuccessAsync` turns any non-2xx response into a `MatrixException`. If the body is
-   not a Matrix error (for example an HTML page from a reverse proxy), the error code falls
-   back to `M_UNKNOWN`.
-4. Deserialise the response. Properties the spec marks as required use C#'s `required`
+1. Builds an absolute URI from the homeserver URL and the relative path. A trailing slash is
+   added to the homeserver URL if missing, so a homeserver under a sub-path
+   (`https://example.org/matrix/`) keeps that path.
+2. Serialises the body, if any, with the shared `JsonSerializerOptions`: `snake_case`
+   property names, and `null` properties omitted.
+3. Applies the endpoint's authentication requirement:
+   - `None`: never sends a token.
+   - `Optional`: sends one if available.
+   - `Required`: sends one, or throws `InvalidOperationException` before sending anything.
+     This indicates a library bug, because `MatrixClient` always has a session.
+4. Takes an `HttpClient` from its client source and sends the request. The client source
+   and access token source are both read once per request.
+5. Turns any non-2xx response into a `MatrixException`. If the body is not a Matrix error
+   (for example an HTML page from a reverse proxy), the error code falls back to `M_UNKNOWN`.
+6. Deserialises the response. Properties the spec marks as required use C#'s `required`
    modifier, so a missing field throws `JsonException` rather than producing a half-empty
-   object.
+   object. A literal `null` body also throws `JsonException`.
 
-`MatrixServer` can be constructed from a `Uri`, or from an existing `HttpClient` for tests
-and `IHttpClientFactory`.
+The request is built from its parts inside the transport rather than passed in, so the
+future refresh-and-retry logic can rebuild it (D16).
+
+`MatrixServer` can be constructed from a homeserver `Uri` alone, which uses the shared
+client, or together with an `HttpClient` for tests.
 
 ### Identifier serialisation
 
@@ -93,6 +109,11 @@ Each decision records its status, what was decided and why.
 - **Proposed**: recommended during design discussion, awaiting confirmation.
 - **Deferred**: agreed in principle but not scheduled yet.
 
+Decisions are numbered in the order they were made, and a number is never reused or
+changed. This keeps references such as "D10" stable across the code, commits and
+discussions. Sections group decisions by topic, so numbers within a section may not be
+contiguous. A superseded decision keeps its number and says what replaced it.
+
 ### 3.1 Foundations
 
 General decisions made while building the first endpoints.
@@ -100,10 +121,44 @@ General decisions made while building the first endpoints.
 #### D1. Errors are exceptions, not return values (Decided)
 
 Server errors throw `MatrixException` with `StatusCode`, `ErrorCode` and the server's
-message.
+message. This also covers expected failures such as a wrong password. There is no
+`Result` type.
 
-**Why:** Exceptions are .NET convention. matrix-nio's error-as-value style forces a type
-check after every call.
+Handling a specific error in place uses an exception filter with the constants in
+`MatrixErrorCodes`, which lists every error code defined by the spec:
+
+```csharp
+catch (MatrixException e) when (e.ErrorCode == MatrixErrorCodes.Forbidden) { ... }
+```
+
+Errors that carry extra data get a subclass on demand (D13).
+
+`ErrorCode` is a plain string, and `MatrixErrorCodes` is only a set of constants for
+comparison. Parsing never depends on them. Error codes the library does not know about are
+passed through unchanged, whether added by a newer spec or custom to a homeserver (e.g.
+`COM.EXAMPLE_FORBIDDEN`). Unknown fields in error and success responses are ignored. Apps
+therefore keep working when the homeserver is ahead of the SDK. This is covered by unit
+tests.
+
+**Why:**
+
+- **Exceptions are .NET convention.** The base class library, `HttpClient` and EF Core all
+  use them.
+- **A `Result` type loses its main benefit in C#.** C# 12 (.NET 8) has no discriminated
+  unions, so the compiler cannot force callers to handle the error case; `.Value` can be
+  read without checking.
+- **Two error channels would remain anyway.** Network failures, timeouts and cancellation
+  (`OperationCanceledException`) are still exceptions, so a `Result` would only cover Matrix
+  errors. matrix-nio has exactly this split, and its error-as-value style forces a type check
+  after every call.
+- **The `Try` pattern does not fit async code.** Async methods cannot have `out` parameters.
+- **Most errors should bubble up** to a common handler in a chat app. Where one is handled in
+  place, the exception filter above is short.
+- **Exceptions are cheap compared with the network.** Throwing costs microseconds; the HTTP
+  request costs tens to hundreds of milliseconds.
+
+A `Try…Async` method returning a result object can still be added later for a specific
+high-frequency case. That is purely additive.
 
 #### D2. `UserIdentifier.User` is `required` (Decided)
 
@@ -128,6 +183,27 @@ The public entry types are `MatrixServer` and `MatrixClient`, renamed from `Serv
 
 **Why:** `Server` and `Client` are generic enough to clash with types in consuming apps and
 other libraries.
+
+#### D20. A full SDK that also works as a thin API library (Decided in principle)
+
+matrix.NET aims to be a full SDK, including sync, room state and end-to-end encryption. It
+must also serve users who only want typed access to the Client-Server API. Principles:
+
+- **The endpoint layer stands alone.** Calling endpoint methods on `MatrixServer` and
+  `MatrixClient` never requires a store, a background task or any local state beyond the
+  session.
+- **Stateful features are opt-in.** The sync loop, room and state caches, end-to-end
+  encryption and their persistence are built on top of the endpoint layer. They are enabled
+  explicitly and never required for endpoint calls.
+- **Thin-library users pay nothing for the full SDK.** They get no hidden I/O, no background
+  work, and ideally no dependencies such as a database or crypto library.
+
+How to layer this is still open. The options are opt-in features on the same types,
+separate higher-level types, or separate packages.
+
+**Why:** The SDKs researched are either thin, like the matrix-nio and mautrix-python cores,
+or full, like matrix-rust-sdk. A layered design serves both audiences. It also keeps the
+endpoint layer easy to test in isolation.
 
 ### 3.2 Authenticated session design
 
@@ -162,9 +238,13 @@ inside a client.
 
 #### D7. Separate unauthenticated and authenticated types (Decided)
 
-Unauthenticated endpoints (discovery, login types, login, registration) live on
-`MatrixServer`. Authenticated endpoints live on `MatrixClient`, which can only be created
-from a session.
+Endpoints split into three groups:
+
+- **Only meaningful before login**, such as discovery, login types, login and registration.
+  These live on `MatrixServer`.
+- **Requiring authentication.** These live on `MatrixClient`, which can only be created from
+  a session.
+- **Usable with or without a session.** These live on both types; see D19.
 
 **Why:** A `MatrixClient` can never be in a "not logged in" state, so no runtime "not logged
 in" checks are needed and misuse is caught at compile time. None of the four SDKs researched
@@ -181,6 +261,34 @@ storage. There is no `MatrixClient.LoginAsync` wrapper.
 client to learn, document and test. The cost is one extra line at login.
 
 This replaces an earlier proposal for a static `Client.LoginAsync(server, request)` factory.
+
+Rules for the constructor:
+
+- **The constructor never performs I/O.** It only stores its arguments. This is a lasting
+  commitment, not a description of the current code.
+- **Asynchronous resources are initialised lazily**, on first use. Examples are the future
+  crypto store, the sync state and cached server metadata. Initialisation runs once and is
+  thread-safe. A failure is thrown from the call that triggered it, and the next call tries
+  again.
+- **The access token is not validated on creation.** The first real request reveals whether
+  it is still valid: a rejected token throws `MatrixUnknownTokenException` and raises the
+  session-invalidated notification (D14). Apps that want an early check can call `whoami`
+  themselves.
+- **Heavy start-up work belongs to an explicit start step.** For example, the future sync loop
+  will be started with its own method, as matrix-js-sdk separates `createClient()` from
+  `startClient()`.
+
+**Why no I/O on creation:** none of the I/O the library will ever need has to happen at
+creation. Keeping the constructor free of I/O means no async factory or initialisation method
+is needed. The alternatives were rejected:
+
+- **A static `CreateAsync` factory:** it would be an empty shell today and would break D8
+  from the start.
+- **A required `InitializeAsync()`:** it is easy to forget and leaves half-initialised
+  objects.
+
+If a need for creation-time I/O ever appears, a factory can still be added alongside the
+constructor without breaking it.
 
 #### D9. `MatrixClient` does not depend on `MatrixServer` (Decided)
 
@@ -205,29 +313,66 @@ purpose.
 #### D10. HTTP source overloads (Decided)
 
 ```csharp
-new MatrixClient(session);                      // simplest: owns its HttpClient
-new MatrixClient(session, httpClientFactory);   // DI and long-running apps
+new MatrixClient(session);                      // simplest: uses the library's shared HttpClient
 new MatrixClient(session, httpClient);          // caller-owned, e.g. tests with a stub handler
+new MatrixClient(session, () => httpClient);    // caller-supplied source, read once per request
 ```
+
+`MatrixServer` offers the same choices, with a homeserver `Uri` in place of the session.
+
+`IHttpClientFactory` support lives in a separate DI extension package (D18), which passes
+`() => factory.CreateClient(...)` to the `Func<HttpClient>` overload.
 
 Rules:
 
-- The library-owned `HttpClient` uses `SocketsHttpHandler` with `PooledConnectionLifetime`,
-  so long-running clients pick up DNS changes without a factory.
-- With a factory, a client is taken from it per request, which is how `IHttpClientFactory`
-  is meant to be used.
-- Whoever creates an `HttpClient` disposes it: `MatrixClient` disposes only the one it
-  created.
+- Without a caller-supplied source, the library uses one static `HttpClient`, shared by every
+  `MatrixServer` and `MatrixClient`. It uses `SocketsHttpHandler` with
+  `PooledConnectionLifetime`, so long-running clients pick up DNS changes without a factory.
+  This follows Microsoft's `HttpClient` guidance for apps without DI.
+- The shared client is never disposed, and the library never disposes a caller-supplied
+  `HttpClient`, so HTTP clients involve no ownership or disposal.
+- A `Func<HttpClient>` source is called once per request. With a factory behind it, this is
+  how `IHttpClientFactory` is meant to be used.
 - Requests use absolute URIs built from the session's homeserver URL and never rely on
   `HttpClient.BaseAddress`, because factory clients may not have one.
+- Internally the transport only sees a `Func<HttpClient>`. The core library has no
+  dependency on `IHttpClientFactory`.
 
 **Why:**
 
+- **One shared client instead of one per instance:** this was changed from "each instance
+  owns and disposes its own client" when building the transport. Microsoft recommends one
+  long-lived `HttpClient`. A shared one also removes a disposal rule that is easy to get
+  wrong.
 - **The factory is optional, not required:** requiring `IHttpClientFactory` would force
   console apps, Unity and non-DI desktop apps to pull in `Microsoft.Extensions.Http` and a
   `ServiceCollection` just to obtain one.
 - **A factory is still offered:** a chat client's sync loop can run for days, and one
   long-lived `HttpClient` would keep connecting to stale DNS results.
+- **The factory is in an extension package, not the core:** `IHttpClientFactory` is defined
+  in the `Microsoft.Extensions.Http` package, not the base framework. A factory overload in
+  the core would make every user depend on that package and on the DI, logging and options
+  abstractions it brings, although not everyone uses DI. Separate DI packages are the usual
+  .NET pattern (e.g. `Microsoft.Extensions.Http` itself). Two other options were rejected:
+  - accepting the dependency in the core;
+  - offering only `Func<HttpClient>`, which would leave DI users to wire the factory up
+    themselves.
+- **`Func<HttpClient>` is public:** it is what the extension package builds on, so the
+  package needs no access to internals. Non-DI apps can also use it for their own client
+  management.
+- **Misuse of `Func<HttpClient>` is only guarded by documentation:**
+  - The risk: `() => new HttpClient()` looks harmless, but opens new connections for every
+    request. That is slow, and can exhaust sockets under heavy load.
+  - It cannot be detected at runtime, because `IHttpClientFactory` also returns a new
+    instance per call.
+  - The parameter is named `httpClientSource`, and its XML documentation states the
+    once-per-request contract and shows the anti-pattern. The overload is deliberately not
+    hidden from IntelliSense, so users see the warning in completion.
+  - Two alternatives were rejected. Hiding it with `[EditorBrowsable]` is inconsistent
+    across IDEs. Making it internal, with `InternalsVisibleTo` for the extension package,
+    trades a low-probability problem for a cross-package code smell.
+  - The impact is mostly latency for chat clients, which send few requests. Non-DI users
+    normally pick the `HttpClient` overload anyway.
 
 #### D11. `MatrixSession` contents (Decided)
 
@@ -251,41 +396,54 @@ Its `ToString()` hides the tokens.
 
 #### D12. Automatic token refresh: on by default, can be turned off (Decided)
 
-Automatic refresh is enabled by default and disabled through
-`ClientOptions.AutoRefreshToken`. `ClientOptions` is an optional constructor parameter; an
-options object keeps future options from changing constructor signatures.
+Two independent settings control refresh tokens. They live on different types, because
+`MatrixServer` does not know about `MatrixClient` (D6, D9).
 
-It is not implemented yet. For now the switch only decides what happens when the homeserver
-rejects the token with `M_UNKNOWN_TOKEN`, as shown below.
+| Setting | Question it answers | Default |
+|---|---|---|
+| `LoginRequest.RefreshToken` | Should login ask the homeserver for a refresh token? | `true` |
+| `ClientOptions.AutoRefreshToken` | Who refreshes: the library or the app? | `true` (the library) |
 
-| Switch | Session has refresh token | Result | Message |
-|---|---|---|---|
-| On | Yes | `NotImplementedException` | `Automatic token refresh is not implemented yet. Set ClientOptions.AutoRefreshToken to false to disable it.` |
-| On | No | `MatrixUnknownTokenException` | `The access token is no longer valid and the session has no refresh token. Log in again.` |
-| Off | Yes | `MatrixUnknownTokenException` | `The access token is no longer valid and automatic token refresh is disabled. Refresh the session manually or log in again.` |
-| Off | No | `MatrixUnknownTokenException` | Same as On / No |
+`ClientOptions` is an optional `MatrixClient` constructor parameter. An options object keeps
+future options from changing constructor signatures.
 
-Rules for these cases:
+Every combination is meaningful, so neither type needs to know about the other:
 
-- The exception is thrown when a refresh would actually be needed, not when a
-  `MatrixClient` is created.
+| Refresh token requested | Auto refresh | Meaning |
+|---|---|---|
+| Yes | On | The library handles refresh entirely. **This is the default.** |
+| Yes | Off | The app manages refresh itself, e.g. to coordinate refreshes across processes. |
+| No | Either | No refresh token: once the access token is invalid, the user must log in again. |
+
+When the homeserver rejects the access token with `M_UNKNOWN_TOKEN`:
+
+| Auto refresh | Session has refresh token | Result |
+|---|---|---|
+| On | Yes | Refresh through `POST /refresh`, then retry the request once. Concurrent requests share a single refresh. If the homeserver definitively rejects the refresh, throw `MatrixUnknownTokenException`: `The access token expired and could not be refreshed. Log in again.` |
+| On | No | `MatrixUnknownTokenException`: `The access token is no longer valid and the session has no refresh token. Log in again.` |
+| Off | Yes | `MatrixUnknownTokenException`: `The access token is no longer valid and automatic token refresh is disabled. Refresh the session manually or log in again.` |
+| Off | No | Same as On / No |
+
+Rules:
+
+- A refresh that fails for a transient reason, such as a network error or a 5xx response,
+  throws that error without invalidating the session. Only a definite rejection means
+  "logged out".
 - The homeserver's own `error` text is kept alongside the library's message.
-- Every `MatrixUnknownTokenException` case also raises the session-invalidated notification
-  (D14).
+- A successful refresh raises the tokens-refreshed notification (D14). Every
+  `MatrixUnknownTokenException` raises the session-invalidated notification.
 
 **Why:**
 
-- **Default on:** most apps want refresh, and rust-sdk's opt-in refresh is easy to miss.
-- **Configurable:** some apps manage tokens themselves.
-- **`NotImplementedException` instead of silently ignoring the switch:** this makes the gap
-  visible.
-- **Different messages per switch:** they tell the developer exactly which action fixes the
+- **Default on at both ends:** most apps want refresh, and rust-sdk's opt-in refresh is easy
+  to miss. With login defaulting to not requesting a refresh token, "auto refresh on by
+  default" would have had no effect in default usage. Requesting one also tells the
+  homeserver the client supports refresh, as the spec intends.
+- **Two settings instead of one:** "whether to have a refresh token" and "who refreshes it"
+  are different questions. A single switch derived from the session could not support apps
+  that refresh tokens themselves.
+- **Different messages per case:** they tell the developer exactly which action fixes the
   situation.
-
-When the switch is on, a login should send `refresh_token: true`. Under the spec, this
-invites the homeserver to issue expiring tokens. Default configurations will therefore reach
-the `NotImplementedException` path once the token expires. That is intended: it makes the
-missing feature impossible to overlook.
 
 #### D13. Exception subclasses are added on demand (Decided)
 
@@ -369,16 +527,75 @@ The app stores `MatrixSession` wherever it sees fit: keychain, encrypted file, d
 **Why:** Every SDK researched does this. Secure storage is platform-specific: Element Web
 uses encrypted localStorage and Element X uses the system keychain.
 
-#### D18. DI registration helper (Deferred)
+#### D18. DI extension package (Decided in principle; Deferred)
+
+All dependency-injection support lives in a separate package, for example
+`TeamBanana.MatrixDotNet.Extensions.DependencyInjection`, following the
+`Microsoft.Extensions.*` naming pattern. It depends on the core library and
+`Microsoft.Extensions.Http`; the core depends on neither.
 
 ```csharp
 services.AddMatrix();                                  // registers IMatrixClientFactory
 var client = matrixClientFactory.Create(session);      // uses IHttpClientFactory internally
 ```
 
-**Why deferred:** a session is runtime data, so `MatrixClient` cannot be a typed client
-resolved directly from DI. A small factory hides `IHttpClientFactory` from DI users, but it
-is a convenience that can wait until someone needs it.
+- `IMatrixClientFactory` creates `MatrixClient` and `MatrixServer` instances through the
+  core's public `Func<HttpClient>` overloads (D10), backed by `IHttpClientFactory`.
+
+**Why a separate package:** not every user needs DI. See D10.
+
+**Why a factory interface:** a session is runtime data, so `MatrixClient` cannot be a typed
+client resolved directly from DI. A small factory hides `IHttpClientFactory` from DI users.
+
+**Why deferred:** it is a convenience that can wait until someone needs it. The core already
+exposes everything the package needs.
+
+#### D19. Endpoints usable with or without a session are declared on both types (Decided)
+
+Some endpoints make sense both before and after login. Examples:
+
+- `GET /versions`
+- `GET /profile/{userId}`
+- the published room directory
+
+Each such endpoint is declared as a public method on both `MatrixServer` and `MatrixClient`,
+and uses `AuthRequirement.Optional`:
+
+- `server.GetProfileAsync(...)` sends no token.
+- `client.GetProfileAsync(...)` sends the session's token automatically, including after a
+  refresh.
+
+Duplication is kept to one line per endpoint on each side:
+
+- **One implementation:** the request logic lives once in an internal class that takes the
+  transport. The public methods on both types forward to it in one line.
+- **No signature drift:** both types implement one internal interface listing these
+  endpoints, so if one side is changed and the other forgotten, the build fails.
+- **One set of docs:** XML documentation is written once and reused with
+  `<inheritdoc cref="..."/>`.
+
+Each side remains free to diverge where that helps. For example, `MatrixClient` could default
+the profile's user ID to its own, or an endpoint could move to one side only when the spec
+changes. The spec has already done this once: since v1.11, downloading media uses
+authenticated endpoints, and the unauthenticated ones are deprecated. Media download is
+therefore a `MatrixClient`-only feature, not a shared one.
+
+**Why:** Three other options were considered:
+
+- **`client.Server`,** a `MatrixServer` wired to the client's live token source. It exposes
+  login and registration on a logged-in client (`client.Server.LoginAsync`). That is harmless
+  but semantically odd. Its advantages over the caller passing a token around remain valid:
+  the token never leaves the library, and it follows refreshes and logout.
+- **A shared public base class** (`MatrixServer` and `MatrixClient` both derive from it).
+  This means the least code, but it adds a public type, uses up the single inheritance slot,
+  and makes per-side differences awkward (`virtual`/`override`, or moving methods out of the
+  base).
+- **Exposing the shared endpoints through an interface-typed property**
+  (`client.Public.GetProfileAsync()`). This adds an extra step to every call, and a cast
+  back to `MatrixServer` would expose login again.
+
+Since the two sides are expected to diverge, explicit declarations on each type are
+preferred over inheritance.
 
 ## 4. Pitfalls and limitations
 
@@ -414,8 +631,11 @@ is a convenience that can wait until someone needs it.
 - The session design (§3.2) is decided but not implemented:
   - `MatrixServer.LoginAsync` still returns `LoginResponse`;
   - `MatrixClient` is empty, with no authenticated endpoints, including logout;
-  - there is no internal transport layer yet.
+  - the transport sends each request once. There is no refresh-and-retry and no
+    `M_UNKNOWN_TOKEN` handling yet.
 - Only `m.id.user` identifiers are supported.
+- XML documentation is generated and shipped, so IDEs show it. Warning CS1591, for missing
+  documentation, is silenced until all public members are documented.
 - Rate-limit details (`retry_after_ms`) are not exposed.
 - `well_known` in the login response and the deprecated `home_server` field are not
   modelled.
@@ -425,16 +645,15 @@ is a convenience that can wait until someone needs it.
 
 The feature roadmap lives in [TODO.md](../TODO.md). Near-term technical work:
 
-1. Implement the session design (D6 to D17): internal transport, `MatrixSession`,
+1. Implement the session design (D6 to D17, D19): internal transport, `MatrixSession`,
    `ClientOptions`, `MatrixUnknownTokenException` and the `MatrixClient` lifecycle.
 2. Logout and `whoami`, the first authenticated endpoints.
-3. Real automatic token refresh, replacing the `NotImplementedException` path: single-flight
-   refresh with one retry, and "logged out" only on a definite rejection.
+3. Automatic token refresh (D12).
 4. Server discovery through `.well-known/matrix/client`.
 
 Later considerations, not designed yet:
 
-- **DI registration helper:** see D18.
+- **DI extension package:** see D18.
 - **Application services (bridges):** mautrix-python's model is worth studying. It shares
   one token and HTTP session across many puppeted users, distinguished by the `user_id`
   query parameter.
