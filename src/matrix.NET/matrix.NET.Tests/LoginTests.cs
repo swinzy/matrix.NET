@@ -6,7 +6,7 @@ namespace TeamBanana.MatrixDotNet.Tests;
 public class LoginTests
 {
     private static MatrixServer CreateServer(StubHttpMessageHandler handler) =>
-        new(new HttpClient(handler) { BaseAddress = new Uri("https://matrix.example.org/") });
+        new(new Uri("https://matrix.example.org/"), new HttpClient(handler));
 
     private static LoginRequest PasswordLogin() => new()
     {
@@ -23,7 +23,7 @@ public class LoginTests
     {
         var handler = new StubHttpMessageHandler(HttpStatusCode.OK, MinimalResponse);
 
-        await CreateServer(handler).LoginAsync(PasswordLogin());
+        await CreateServer(handler).LoginAsync(PasswordLogin(), TestContext.Current.CancellationToken);
 
         Assert.Equal(HttpMethod.Post, handler.Request!.Method);
         Assert.Equal("https://matrix.example.org/_matrix/client/v3/login", handler.Request.RequestUri!.ToString());
@@ -36,11 +36,26 @@ public class LoginTests
         var request = PasswordLogin();
         request.InitialDeviceDisplayName = "Jungle Phone";
 
-        await CreateServer(handler).LoginAsync(request);
+        await CreateServer(handler).LoginAsync(request, TestContext.Current.CancellationToken);
 
-        // Matches the request example in the spec; null fields must not be sent
+        // The spec's request example plus refresh_token, which is requested by default (D12);
+        // null fields must not be sent
         Assert.Equal(
-            """{"type":"m.login.password","identifier":{"type":"m.id.user","user":"cheeky_monkey"},"password":"ilovebananas","initial_device_display_name":"Jungle Phone"}""",
+            """{"type":"m.login.password","identifier":{"type":"m.id.user","user":"cheeky_monkey"},"password":"ilovebananas","initial_device_display_name":"Jungle Phone","refresh_token":true}""",
+            handler.RequestBody);
+    }
+
+    [Fact]
+    public async Task LoginAsync_CanOptOutOfRefreshToken()
+    {
+        var handler = new StubHttpMessageHandler(HttpStatusCode.OK, MinimalResponse);
+        var request = PasswordLogin();
+        request.RefreshToken = false;
+
+        await CreateServer(handler).LoginAsync(request, TestContext.Current.CancellationToken);
+
+        Assert.Equal(
+            """{"type":"m.login.password","identifier":{"type":"m.id.user","user":"cheeky_monkey"},"password":"ilovebananas","refresh_token":false}""",
             handler.RequestBody);
     }
 
@@ -56,7 +71,7 @@ public class LoginTests
             RefreshToken = true
         };
 
-        await CreateServer(handler).LoginAsync(request);
+        await CreateServer(handler).LoginAsync(request, TestContext.Current.CancellationToken);
 
         Assert.Equal(
             """{"type":"m.login.token","token":"login-token","device_id":"GHTYAJCE","refresh_token":true}""",
@@ -69,7 +84,7 @@ public class LoginTests
         var handler = new StubHttpMessageHandler(HttpStatusCode.OK,
             """{"user_id":"@cheeky_monkey:matrix.org","access_token":"abc123","refresh_token":"def456","expires_in_ms":60000,"device_id":"GHTYAJCE","home_server":"matrix.org"}""");
 
-        var response = await CreateServer(handler).LoginAsync(PasswordLogin());
+        var response = await CreateServer(handler).LoginAsync(PasswordLogin(), TestContext.Current.CancellationToken);
 
         Assert.Equal("@cheeky_monkey:matrix.org", response.UserId);
         Assert.Equal("abc123", response.AccessToken);
@@ -83,7 +98,7 @@ public class LoginTests
     {
         var handler = new StubHttpMessageHandler(HttpStatusCode.OK, MinimalResponse);
 
-        var response = await CreateServer(handler).LoginAsync(PasswordLogin());
+        var response = await CreateServer(handler).LoginAsync(PasswordLogin(), TestContext.Current.CancellationToken);
 
         Assert.Null(response.RefreshToken);
         Assert.Null(response.ExpiresInMs);
@@ -95,7 +110,7 @@ public class LoginTests
         var handler = new StubHttpMessageHandler(HttpStatusCode.OK,
             """{"user_id":"@cheeky_monkey:matrix.org","device_id":"GHTYAJCE"}""");
 
-        await Assert.ThrowsAsync<JsonException>(() => CreateServer(handler).LoginAsync(PasswordLogin()));
+        await Assert.ThrowsAsync<JsonException>(() => CreateServer(handler).LoginAsync(PasswordLogin(), TestContext.Current.CancellationToken));
     }
 
     [Fact]
@@ -105,7 +120,7 @@ public class LoginTests
             """{"errcode":"M_FORBIDDEN","error":"Invalid username or password"}""");
 
         var exception = await Assert.ThrowsAsync<MatrixException>(() =>
-            CreateServer(handler).LoginAsync(PasswordLogin()));
+            CreateServer(handler).LoginAsync(PasswordLogin(), TestContext.Current.CancellationToken));
 
         Assert.Equal(HttpStatusCode.Forbidden, exception.StatusCode);
         Assert.Equal("M_FORBIDDEN", exception.ErrorCode);
@@ -118,7 +133,7 @@ public class LoginTests
         var handler = new StubHttpMessageHandler(HttpStatusCode.Forbidden, """{"errcode":"M_FORBIDDEN"}""");
 
         var exception = await Assert.ThrowsAsync<MatrixException>(() =>
-            CreateServer(handler).LoginAsync(PasswordLogin()));
+            CreateServer(handler).LoginAsync(PasswordLogin(), TestContext.Current.CancellationToken));
 
         Assert.Equal("M_FORBIDDEN", exception.Message);
     }
@@ -129,7 +144,7 @@ public class LoginTests
         var handler = new StubHttpMessageHandler(HttpStatusCode.BadGateway, "<html>Bad Gateway</html>", "text/html");
 
         var exception = await Assert.ThrowsAsync<MatrixException>(() =>
-            CreateServer(handler).LoginAsync(PasswordLogin()));
+            CreateServer(handler).LoginAsync(PasswordLogin(), TestContext.Current.CancellationToken));
 
         Assert.Equal(HttpStatusCode.BadGateway, exception.StatusCode);
         Assert.Equal("M_UNKNOWN", exception.ErrorCode);

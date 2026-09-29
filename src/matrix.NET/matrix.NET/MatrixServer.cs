@@ -1,63 +1,47 @@
-using System.Net.Http.Json;
-using System.Text.Json;
-using System.Text.Json.Serialization;
+using TeamBanana.MatrixDotNet.Transport;
 
 namespace TeamBanana.MatrixDotNet;
 
 public class MatrixServer
 {
-    private static readonly JsonSerializerOptions JsonOptions = new()
+    private readonly MatrixTransport _transport;
+
+    public MatrixServer(Uri homeserver)
     {
-        PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
-    };
+        _transport = new MatrixTransport(homeserver);
+    }
 
-    private readonly HttpClient _client;
-
-    public MatrixServer(Uri baseUri)
-        : this(new HttpClient { BaseAddress = baseUri })
+    public MatrixServer(Uri homeserver, HttpClient client)
+        : this(homeserver, () => client)
     {
     }
 
-    public MatrixServer(HttpClient client)
+    /// <summary>
+    /// Creates a server whose requests use an <see cref="HttpClient"/> obtained from
+    /// <paramref name="httpClientSource"/> for every request.
+    /// </summary>
+    /// <param name="homeserver">Base URL of the homeserver.</param>
+    /// <param name="httpClientSource">
+    /// Called once per request. It must return a long-lived client or one managed by
+    /// <c>IHttpClientFactory</c>, e.g. <c>() => factory.CreateClient("matrix")</c>.
+    /// Never create a new client in it, such as <c>() => new HttpClient()</c>: every request would
+    /// then open new connections, which is slow and can exhaust sockets under load.
+    /// </param>
+    public MatrixServer(Uri homeserver, Func<HttpClient> httpClientSource)
     {
-        _client = client;
+        _transport = new MatrixTransport(homeserver, httpClientSource);
     }
 
-    public async Task<List<LoginFlow>> GetSupportedLoginTypesAsync()
+    public async Task<List<LoginFlow>> GetSupportedLoginTypesAsync(CancellationToken cancellationToken = default)
     {
-        var response = await _client.GetAsync("/_matrix/client/v3/login");
-        await EnsureSuccessAsync(response);
-        var flows = await response.Content.ReadFromJsonAsync<LoginFlowsResponse>(JsonOptions);
-        return flows?.Flows ?? [];
+        var response = await _transport.SendAsync<LoginFlowsResponse>(HttpMethod.Get,
+            "_matrix/client/v3/login", AuthRequirement.None, cancellationToken);
+        return response.Flows ?? [];
     }
 
-    public async Task<LoginResponse> LoginAsync(LoginRequest request)
-    {
-        var response = await _client.PostAsJsonAsync("/_matrix/client/v3/login", request, JsonOptions);
-        await EnsureSuccessAsync(response);
-        return (await response.Content.ReadFromJsonAsync<LoginResponse>(JsonOptions))!;
-    }
-
-    private static async Task EnsureSuccessAsync(HttpResponseMessage response)
-    {
-        if (response.IsSuccessStatusCode)
-            return;
-
-        ErrorResponse? error = null;
-        try
-        {
-            error = await response.Content.ReadFromJsonAsync<ErrorResponse>(JsonOptions);
-        }
-        catch (JsonException)
-        {
-            // Not a Matrix error body, e.g. an HTML page from a reverse proxy
-        }
-
-        throw new MatrixException(response.StatusCode, error?.Errcode ?? "M_UNKNOWN", error?.Error);
-    }
-
-    private record ErrorResponse(string Errcode, string? Error);
+    public Task<LoginResponse> LoginAsync(LoginRequest request, CancellationToken cancellationToken = default) =>
+        _transport.SendAsync<LoginRequest, LoginResponse>(HttpMethod.Post,
+            "_matrix/client/v3/login", request, AuthRequirement.None, cancellationToken);
 
     private record LoginFlowsResponse(List<LoginFlow>? Flows);
 }

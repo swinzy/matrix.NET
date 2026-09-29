@@ -28,7 +28,7 @@ public class LoginIntegrationTests
             Password = _settings.Password,
             DeviceId = _settings.DeviceId,
             InitialDeviceDisplayName = "matrix.NET integration tests"
-        });
+        }, TestContext.Current.CancellationToken);
 
         Assert.StartsWith("@", response.UserId);
         Assert.NotEmpty(response.AccessToken);
@@ -47,7 +47,7 @@ public class LoginIntegrationTests
             Type = "m.login.password",
             Identifier = new UserIdentifier { User = _settings.User! },
             Password = _settings.Password + "-wrong"
-        }));
+        }, TestContext.Current.CancellationToken));
 
         Assert.Equal(HttpStatusCode.Forbidden, exception.StatusCode);
         Assert.Equal("M_FORBIDDEN", exception.ErrorCode);
@@ -58,7 +58,7 @@ public class LoginIntegrationTests
     {
         var server = CreateServer();
 
-        var flows = await server.GetSupportedLoginTypesAsync();
+        var flows = await server.GetSupportedLoginTypesAsync(TestContext.Current.CancellationToken);
 
         Assert.Contains(flows, flow => flow.Type == "m.login.password");
     }

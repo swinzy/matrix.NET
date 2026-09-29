@@ -6,6 +6,13 @@
         <Nullable>enable</Nullable>
         <Company>TeamBanana</Company>
         <AssemblyName>TeamBanana.MatrixDotNet</AssemblyName>
+        <!-- Ship XML docs so IDEs show them; CS1591 is silenced until all public members are documented -->
+        <GenerateDocumentationFile>true</GenerateDocumentationFile>
+        <NoWarn>$(NoWarn);CS1591</NoWarn>
     </PropertyGroup>
+
+    <ItemGroup>
+        <InternalsVisibleTo Include="matrix.NET.Tests" />
+    </ItemGroup>
 
 </Project>

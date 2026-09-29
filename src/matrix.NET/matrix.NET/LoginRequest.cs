@@ -8,5 +8,5 @@ public class LoginRequest
     public string? Token { get; set; }
     public string? DeviceId { get; set; }
     public string? InitialDeviceDisplayName { get; set; }
-    public bool? RefreshToken { get; set; }
+    public bool? RefreshToken { get; set; } = true;
 }
