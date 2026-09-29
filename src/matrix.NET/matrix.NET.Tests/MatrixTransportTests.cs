@@ -7,7 +7,7 @@ public class MatrixTransportTests
 {
     private const string Path = "_matrix/client/v3/account/whoami";
 
-    private static MatrixTransport CreateTransport(StubHttpMessageHandler handler, string? accessToken = null,
+    private static MatrixTransport CreateTransport(HttpMessageHandler handler, string? accessToken = null,
         string homeserver = "https://matrix.example.org/") =>
         new(new Uri(homeserver), () => new HttpClient(handler), accessToken is null ? null : () => accessToken);
 
@@ -171,5 +171,94 @@ public class MatrixTransportTests
             .SendAsync<WhoAmI>(HttpMethod.Get, Path, AuthRequirement.None, TestContext.Current.CancellationToken);
 
         Assert.Equal("@a:example.org", response.UserId);
+    }
+
+    [Fact]
+    public async Task SendAsync_TimesOutLikeHttpClient()
+    {
+        var handler = new DelayingHandler(TimeSpan.FromSeconds(30));
+
+        var exception = await Assert.ThrowsAsync<TaskCanceledException>(() =>
+            CreateTransport(handler).SendAsync<WhoAmI>(HttpMethod.Get, Path, AuthRequirement.None,
+                TestContext.Current.CancellationToken, TimeSpan.FromMilliseconds(50)));
+
+        Assert.IsType<TimeoutException>(exception.InnerException);
+    }
+
+    [Fact]
+    public async Task SendAsync_CallerCancellationIsNotReportedAsTimeout()
+    {
+        var handler = new DelayingHandler(TimeSpan.FromSeconds(30));
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        cancellation.CancelAfter(TimeSpan.FromMilliseconds(50));
+
+        var exception = await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            CreateTransport(handler).SendAsync<WhoAmI>(HttpMethod.Get, Path, AuthRequirement.None, cancellation.Token));
+
+        Assert.IsNotType<TimeoutException>(exception.InnerException);
+    }
+
+    [Fact]
+    public async Task SendAsync_InfiniteTimeoutDoesNotCancel()
+    {
+        var handler = new DelayingHandler(TimeSpan.FromMilliseconds(200));
+
+        var response = await CreateTransport(handler).SendAsync<WhoAmI>(HttpMethod.Get, Path, AuthRequirement.None,
+            TestContext.Current.CancellationToken, Timeout.InfiniteTimeSpan);
+
+        Assert.Equal("@a:example.org", response.UserId);
+    }
+
+    [Fact]
+    public void SharedClient_LeavesTimeoutsToEachRequest()
+    {
+        Assert.Equal(Timeout.InfiniteTimeSpan, MatrixTransport.SharedClient.Timeout);
+    }
+
+    [Fact]
+    public void SharedHandler_IsolatesCookiesAndDecompresses()
+    {
+        using var handler = MatrixTransport.CreateSharedHandler(automaticDecompression: true);
+
+        Assert.False(handler.UseCookies);
+        Assert.Equal(DecompressionMethods.All, handler.AutomaticDecompression);
+        Assert.Equal(TimeSpan.FromMinutes(2), handler.PooledConnectionLifetime);
+    }
+
+    [Fact]
+    public void SharedHandler_CanOptOutOfDecompressionOnly()
+    {
+        using var handler = MatrixTransport.CreateSharedHandler(automaticDecompression: false);
+
+        Assert.Equal(DecompressionMethods.None, handler.AutomaticDecompression);
+        Assert.False(handler.UseCookies);
+        Assert.Equal(TimeSpan.FromMinutes(2), handler.PooledConnectionLifetime);
+    }
+
+    [Fact]
+    public void GetSharedClient_ReusesOneClientPerDecompressionSetting()
+    {
+        var withDecompression = MatrixTransport.GetSharedClient(automaticDecompression: true);
+        var withoutDecompression = MatrixTransport.GetSharedClient(automaticDecompression: false);
+
+        Assert.Same(MatrixTransport.SharedClient, withDecompression);
+        Assert.NotSame(withDecompression, withoutDecompression);
+        Assert.Same(withoutDecompression, MatrixTransport.GetSharedClient(automaticDecompression: false));
+        Assert.Equal(Timeout.InfiniteTimeSpan, withoutDecompression.Timeout);
+    }
+
+    /// <summary>Waits before answering, and honours cancellation while waiting.</summary>
+    private sealed class DelayingHandler(TimeSpan delay) : HttpMessageHandler
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            await Task.Delay(delay, cancellationToken);
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("""{"user_id":"@a:example.org"}""", System.Text.Encoding.UTF8,
+                    "application/json")
+            };
+        }
     }
 }

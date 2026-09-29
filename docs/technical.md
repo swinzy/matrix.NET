@@ -331,6 +331,30 @@ Rules:
   This follows Microsoft's `HttpClient` guidance for apps without DI.
 - The shared client is never disposed, and the library never disposes a caller-supplied
   `HttpClient`, so HTTP clients involve no ownership or disposal.
+- The shared client is configured for being shared:
+  - **Cookies are disabled** (`UseCookies = false`). One cookie container would otherwise be
+    shared by every account and homeserver. The Matrix API does not use cookies, but reverse
+    proxies and load balancers may set them.
+  - **Timeouts are per request.** The client's own `Timeout` is infinite. The transport
+    applies a default of 100 seconds to each request, matching `HttpClient`'s default, and
+    individual endpoints can override it, e.g. long-polling `/sync`. A timeout throws
+    `TaskCanceledException` with an inner `TimeoutException`, exactly as `HttpClient`
+    does, so existing handling keeps working. Cancellation by the caller is not reported as
+    a timeout.
+  - **Responses are decompressed automatically** (GZip, Deflate and Brotli), because
+    `/sync` responses are large JSON. Decompression is transparent to content, so hashes of
+    end-to-end encrypted attachments still hold. Two side effects matter for future media
+    downloads: `Content-Length` no longer reflects the bytes received, so progress
+    reporting must not rely on it; and `Range` requests address compressed bytes if the
+    server compresses, so resumable downloads need care.
+    Decompression can be turned off for users who need the raw encoded bytes, such as a thin
+    forwarding layer: `new MatrixServer(uri, automaticDecompression: false)`, and the same
+    option on `ClientOptions`. It is a handler-level setting, so it cannot vary per request.
+    Turning it off selects a second shared client, identical except for decompression, which
+    is created only when first needed. Without decompression no `Accept-Encoding` header is
+    sent, so homeservers answer uncompressed and JSON parsing is unaffected.
+- Caller-supplied clients keep their own settings. Their `Timeout` still applies alongside
+  the transport's per-request timeout.
 - A `Func<HttpClient>` source is called once per request. With a factory behind it, this is
   how `IHttpClientFactory` is meant to be used.
 - Requests use absolute URIs built from the session's homeserver URL and never rely on

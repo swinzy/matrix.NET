@@ -1,3 +1,4 @@
+using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
@@ -17,11 +18,21 @@ internal sealed class MatrixTransport
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
     };
 
-    // Shared across the library; pooled connections are recycled so DNS changes are picked up
-    private static readonly HttpClient SharedClient = new(new SocketsHttpHandler
-    {
-        PooledConnectionLifetime = TimeSpan.FromMinutes(2)
-    });
+    /// <summary>
+    /// Applied to each request unless overridden; matches <see cref="HttpClient.Timeout"/>'s default.
+    /// </summary>
+    internal static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(100);
+
+    // Shared across the library. Timeouts are applied per request instead, so long-polling
+    // requests can use their own
+    internal static readonly HttpClient SharedClient = CreateSharedClient(automaticDecompression: true);
+
+    // Only created if someone opts out of decompression
+    private static readonly Lazy<HttpClient> SharedClientWithoutDecompression =
+        new(() => CreateSharedClient(automaticDecompression: false));
+
+    internal static HttpClient GetSharedClient(bool automaticDecompression) =>
+        automaticDecompression ? SharedClient : SharedClientWithoutDecompression.Value;
 
     private readonly Func<HttpClient> _clientSource;
     private readonly Func<string?>? _accessTokenSource;
@@ -43,25 +54,45 @@ internal sealed class MatrixTransport
 
     public Uri Homeserver { get; }
 
+    /// <summary>
+    /// Sends a request and deserialises the response. <paramref name="timeout"/> overrides
+    /// <see cref="DefaultTimeout"/>, and <see cref="Timeout.InfiniteTimeSpan"/> disables it. A timeout
+    /// throws <see cref="TaskCanceledException"/> with an inner <see cref="TimeoutException"/>.
+    /// </summary>
     public Task<TResponse> SendAsync<TResponse>(HttpMethod method, string path, AuthRequirement auth,
-        CancellationToken cancellationToken = default) =>
-        SendCoreAsync<TResponse>(method, path, null, null, auth, cancellationToken);
+        CancellationToken cancellationToken = default, TimeSpan? timeout = null) =>
+        SendCoreAsync<TResponse>(method, path, null, null, auth, timeout, cancellationToken);
 
+    /// <inheritdoc cref="SendAsync{TResponse}"/>
     public Task<TResponse> SendAsync<TRequest, TResponse>(HttpMethod method, string path, TRequest body,
-        AuthRequirement auth, CancellationToken cancellationToken = default) =>
-        SendCoreAsync<TResponse>(method, path, body, typeof(TRequest), auth, cancellationToken);
+        AuthRequirement auth, CancellationToken cancellationToken = default, TimeSpan? timeout = null) =>
+        SendCoreAsync<TResponse>(method, path, body, typeof(TRequest), auth, timeout, cancellationToken);
 
     private async Task<TResponse> SendCoreAsync<TResponse>(HttpMethod method, string path, object? body,
-        Type? bodyType, AuthRequirement auth, CancellationToken cancellationToken)
+        Type? bodyType, AuthRequirement auth, TimeSpan? timeout, CancellationToken cancellationToken)
     {
-        // Requests are built from their parts rather than reused, so they can be rebuilt
-        // when retrying after a token refresh
-        using var request = CreateRequest(method, path, body, bodyType, auth);
-        using var response = await _clientSource().SendAsync(request, cancellationToken);
-        await EnsureSuccessAsync(response, cancellationToken);
+        var effectiveTimeout = timeout ?? DefaultTimeout;
+        using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutSource.CancelAfter(effectiveTimeout);
 
-        return await response.Content.ReadFromJsonAsync<TResponse>(JsonOptions, cancellationToken)
-               ?? throw new JsonException($"The homeserver returned an empty {typeof(TResponse).Name}.");
+        try
+        {
+            // Requests are built from their parts rather than reused, so they can be rebuilt
+            // when retrying after a token refresh
+            using var request = CreateRequest(method, path, body, bodyType, auth);
+            using var response = await _clientSource().SendAsync(request, timeoutSource.Token);
+            await EnsureSuccessAsync(response, timeoutSource.Token);
+
+            return await response.Content.ReadFromJsonAsync<TResponse>(JsonOptions, timeoutSource.Token)
+                   ?? throw new JsonException($"The homeserver returned an empty {typeof(TResponse).Name}.");
+        }
+        catch (OperationCanceledException e) when (timeoutSource.IsCancellationRequested &&
+                                                   !cancellationToken.IsCancellationRequested)
+        {
+            // Same shape as HttpClient's own timeout, so existing handling keeps working
+            throw new TaskCanceledException($"{method} {path} timed out after {effectiveTimeout.TotalSeconds} seconds.",
+                new TimeoutException(e.Message, e));
+        }
     }
 
     private HttpRequestMessage CreateRequest(HttpMethod method, string path, object? body, Type? bodyType,
@@ -98,6 +129,19 @@ internal sealed class MatrixTransport
 
         throw new MatrixException(response.StatusCode, error?.Errcode ?? MatrixErrorCodes.Unknown, error?.Error);
     }
+
+    private static HttpClient CreateSharedClient(bool automaticDecompression) =>
+        new(CreateSharedHandler(automaticDecompression)) { Timeout = Timeout.InfiniteTimeSpan };
+
+    internal static SocketsHttpHandler CreateSharedHandler(bool automaticDecompression) => new()
+    {
+        // Recycle pooled connections so DNS changes are picked up
+        PooledConnectionLifetime = TimeSpan.FromMinutes(2),
+        // One cookie container would be shared by every account and homeserver; the Matrix API
+        // does not use cookies, but reverse proxies may set them
+        UseCookies = false,
+        AutomaticDecompression = automaticDecompression ? DecompressionMethods.All : DecompressionMethods.None
+    };
 
     // Without a trailing slash, relative URIs would replace the last path segment
     private static Uri WithTrailingSlash(Uri uri) =>

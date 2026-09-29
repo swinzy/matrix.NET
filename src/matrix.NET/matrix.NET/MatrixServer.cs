@@ -6,9 +6,18 @@ public class MatrixServer
 {
     private readonly MatrixTransport _transport;
 
-    public MatrixServer(Uri homeserver)
+    /// <summary>
+    /// Creates a server using the library's shared <see cref="HttpClient"/>.
+    /// </summary>
+    /// <param name="homeserver">Base URL of the homeserver.</param>
+    /// <param name="automaticDecompression">
+    /// Whether compressed responses (GZip, Deflate, Brotli) are requested and decompressed
+    /// automatically. Turn it off only if you need the raw encoded bytes, e.g. when forwarding
+    /// responses unchanged.
+    /// </param>
+    public MatrixServer(Uri homeserver, bool automaticDecompression = true)
     {
-        _transport = new MatrixTransport(homeserver);
+        _transport = new MatrixTransport(homeserver, () => MatrixTransport.GetSharedClient(automaticDecompression));
     }
 
     public MatrixServer(Uri homeserver, HttpClient client)
