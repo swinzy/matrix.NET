@@ -6,7 +6,7 @@ pitfalls and limitations, and where it is heading.
 This is not a guide. There is (not yet) a dedicated usage guide available.
 
 - **Spec baseline:** [Matrix Client-Server API](https://spec.matrix.org/latest/client-server-api/) v1.19
-- **Target framework:** .NET 8
+- **Target framework:** .NET 10 (LTS, supported until November 2028)
 - **Roadmap:** [TODO.md](../TODO.md)
 
 ## Contents
@@ -144,7 +144,7 @@ tests.
 
 - **Exceptions are .NET convention.** The base class library, `HttpClient` and EF Core all
   use them.
-- **A `Result` type loses its main benefit in C#.** C# 12 (.NET 8) has no discriminated
+- **A `Result` type loses its main benefit in C#.** C# 14 (.NET 10) has no discriminated
   unions, so the compiler cannot force callers to handle the error case; `.Value` can be
   read without checking.
 - **Two error channels would remain anyway.** Network failures, timeouts and cancellation
