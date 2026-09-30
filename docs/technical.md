@@ -461,7 +461,7 @@ Rules:
   throws that error without invalidating the session. Only a definite rejection means
   "logged out".
 - The homeserver's own `error` text is kept alongside the library's message.
-- After a successful refresh, the new session is saved through `ISessionPersister` (D23)
+- After a successful refresh, the new session is saved through `ISessionRefreshHandler` (D23)
   **before** the new tokens are used. Only then does the tokens-refreshed notification
   (D14) fire and the failed request get retried. Every `MatrixUnknownTokenException`
   raises the session-invalidated notification.
@@ -508,7 +508,7 @@ Subclasses so far:
 
 The event is for UI and other work that does not affect correctness. **It must not be used
 to persist refreshed tokens.** C# events cannot be awaited, so the library could use the new
-tokens before an asynchronous save finishes. Persistence goes through `ISessionPersister`
+tokens before an asynchronous save finishes. Persistence goes through `ISessionRefreshHandler`
 (D23).
 
 **Why:** Four SDKs out of four leave soft logout entirely to the app. rust-sdk's
@@ -572,7 +572,7 @@ pass in; only authentication stays out of the handler pipeline. The transport's
 #### D17. Credentials are never persisted by the library (Decided)
 
 The app stores `MatrixSession` wherever it sees fit: keychain, encrypted file, database.
-The library decides only *when* a session must be saved, through `ISessionPersister` (D23).
+The library decides only *when* a session must be saved, through `ISessionRefreshHandler` (D23).
 It never decides *where* or *how*.
 
 **Why:** Every SDK researched does this. Secure storage is platform-specific: Element Web
@@ -732,12 +732,15 @@ contradicting the spec's intent that the same session waits for it.
 #### D23. Refreshed sessions are saved through an awaited hook (Decided)
 
 ```csharp
-public interface ISessionPersister
+public interface ISessionRefreshHandler
 {
-    ValueTask SaveAsync(MatrixSession session, CancellationToken cancellationToken);
+    /// Called after the library refreshed the session, before it uses the new tokens.
+    /// Persist the session durably before the returned task completes. If this throws,
+    /// the new tokens are discarded and the old refresh token remains usable.
+    ValueTask OnSessionRefreshedAsync(MatrixSession session, CancellationToken cancellationToken);
 }
 
-var client = new MatrixClient(session, new ClientOptions { SessionPersister = myPersister });
+var client = new MatrixClient(session, new ClientOptions { SessionRefreshHandler = myHandler });
 ```
 
 **The problem it solves.** The spec says: "The old refresh token remains valid until the new
@@ -753,16 +756,17 @@ This is common on mobile, where the OS kills background apps.
 
 Rules:
 
-- After a refresh, the library awaits `SaveAsync` before it uses the new tokens (D12).
+- After a refresh, the library awaits `OnSessionRefreshedAsync` before it uses the new tokens
+  (D12).
 - **If saving fails, the new tokens are not used,** and the error is thrown to the caller.
   The old refresh token is still valid, so the next attempt can refresh again.
-- **The persister is required when it matters.** Constructing a `MatrixClient` throws
+- **The handler is required when it matters.** Constructing a `MatrixClient` throws
   `ArgumentException` when automatic refresh is on, the session has a refresh token and no
-  persister is set. The message names both ways out: set a persister, or turn automatic
-  refresh off. Without a refresh token nothing is ever refreshed, so no persister is needed.
-- **`InMemorySessionPersister`** ships in the core for tests and one-off scripts. It is not a
-  storage solution. It lets an app state explicitly that losing refreshed tokens on restart
-  is acceptable.
+  handler is set. The message names both ways out: set a handler, or turn automatic refresh
+  off. Without a refresh token nothing is ever refreshed, so no handler is needed.
+- **`DiscardingSessionRefreshHandler`** ships in the core for tests and one-off scripts. It
+  stores nothing: it lets an app state explicitly that losing refreshed tokens on restart is
+  acceptable.
 - **Platform secure storage** (DPAPI, Keychain, libsecret, Android Keystore), if ever
   provided, lives in separate packages (D20). It is never in the core.
 
@@ -770,18 +774,80 @@ Rules:
 The app owns where and how sessions are stored, and what happens to stored sessions:
 loading at start-up, deleting after logout, account lists. Hence:
 
-- **Interfaces the app implements contain only methods the library calls.** `SaveAsync` is
-  the only such method. There is no `LoadAsync` or `DeleteAsync`, because the library never
-  loads or deletes sessions.
-- **The name says "persist", not "store",** so it does not invite adding reads later.
+- **Interfaces the app implements contain only methods the library calls.**
+  `OnSessionRefreshedAsync` is the only such method. There is no load or delete, because the
+  library never loads or deletes sessions.
 
-**Why an interface rather than a delegate:** a persister is naturally a class, e.g. one per
+**Naming.** An earlier draft used `ISessionPersister.SaveAsync`. That read as a
+general-purpose "save a session" API: it suggested the library also calls it at login, and
+that apps should call it themselves. The chosen names describe when the library calls the
+app, not a storage operation:
+
+- **`Handler`, not `Listener`,** because this is not an event. A listener observes something
+  that has already happened, and the library neither waits for it nor depends on its result.
+  Here the library waits for the handler to finish, and the outcome decides what happens
+  next: the new tokens are used only if it succeeds. Events for observers remain the job of
+  D14.
+- **The `On…Async` prefix** follows the .NET convention for framework callbacks, e.g.
+  Kestrel's `ConnectionHandler.OnConnectedAsync`, SignalR's `Hub.OnConnectedAsync` and
+  Blazor's `OnInitializedAsync`.
+- **`SessionRefreshed`** names the only moment it is called.
+
+An `On…` name can sound like an optional notification. So the obligation to persist before
+returning is stated in its XML documentation, and the constructor check above enforces that
+a handler exists.
+
+**Why an interface rather than a delegate:** a handler is naturally a class, e.g. one per
 platform or registered in DI. It also reads more clearly in `ClientOptions`.
 
 **Why this is not scope creep:** it comes with automatic refresh (D12). Every SDK researched
 that refreshes automatically has such a hook: rust-sdk's `save_session_callback`, Element X's
 `ClientSessionDelegate`, and matrix-js-sdk's `onTokenRefresh`. Refresh happens inside the
 library, so the app cannot enforce the ordering from outside.
+
+**The first login is saved by the app, not through the handler.** Login happens on
+`MatrixServer` (D6), which does not know about refresh handlers. The `MatrixClient`
+constructor does no I/O (D8), and it is also used to restore sessions, where saving would be
+redundant. The recommended pattern, used by Element Web and Element X, is one save function
+in the app: call it after login, and call it from the refresh handler.
+
+```csharp
+// The app's own save function, used in both places
+async ValueTask SaveSessionAsync(MatrixSession s, CancellationToken ct) => await myStore.WriteAsync(s, ct);
+
+var session = await server.LoginAsync(request);
+await SaveSessionAsync(session, ct);    // first login: the app saves
+
+var client = new MatrixClient(session, new ClientOptions
+{
+    SessionRefreshHandler = new MyRefreshHandler(SaveSessionAsync)    // refresh: the library asks
+});
+```
+
+**Research (September 2026, from source).** Who saves the first session, and is the refresh
+hook also used at login?
+
+| Library | First session saved by | Hook at login | Storage interface |
+|---|---|---|---|
+| matrix-rust-sdk | App (`examples/persist_session` writes `session()` itself) | No. `save_session_callback` fires on refresh only; OAuth `finish_login` skips it deliberately because "it was the source of the session" | Save-only callback |
+| Element X (rust-sdk FFI) | App (`sessionStore.addSession` after login) | No | Save-only delegate |
+| matrix-js-sdk / Element Web | App (`persistCredentials` after login) | No. `onTokenRefresh` fires on refresh only | Save-only callback |
+| matrix-nio | App (`examples/restore_login.py`) | No refresh support | None |
+| Trixnity (Kotlin) | Library (repository layer in `MatrixClient.create`) | Yes, one store for both | Full store |
+| MSAL.NET, Google.Apis.Auth, Slack Bolt, Supabase, Firebase | Library | Yes, one hook for both | Mostly load, save and delete; MSAL uses a whole-cache blob |
+
+There are two camps:
+
+- **Authentication libraries own the token lifecycle.** The app never handles tokens: it
+  asks for "a token for user X", and the library loads, refreshes, saves and deletes. Their
+  store interfaces therefore include load and delete, which the library itself calls.
+- **Mainstream Matrix SDKs treat the session as app-visible data.** The app manages accounts,
+  chooses secure storage and decides what to do after a soft logout. The library only reports
+  sessions it refreshed itself.
+
+matrix.NET follows the Matrix camp, consistent with D6 and D8. Trixnity is the one Matrix
+SDK found in the other camp. No mainstream Matrix SDK offers a library-managed session layer,
+so none is planned.
 
 ## 4. Pitfalls and limitations
 
