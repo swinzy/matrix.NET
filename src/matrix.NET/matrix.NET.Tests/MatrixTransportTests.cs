@@ -247,6 +247,57 @@ public class MatrixTransportTests
         Assert.Equal(Timeout.InfiniteTimeSpan, withoutDecompression.Timeout);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task SendAsync_MapsUnknownTokenWithSoftLogout(bool softLogout)
+    {
+        var handler = new StubHttpMessageHandler(HttpStatusCode.Unauthorized,
+            $$"""{"errcode":"M_UNKNOWN_TOKEN","error":"Token expired","soft_logout":{{(softLogout ? "true" : "false")}}}""");
+
+        var exception = await Assert.ThrowsAsync<MatrixUnknownTokenException>(() =>
+            CreateTransport(handler).SendAsync<WhoAmI>(HttpMethod.Get, Path, AuthRequirement.None, TestContext.Current.CancellationToken));
+
+        Assert.Equal(softLogout, exception.SoftLogout);
+        Assert.Equal("Token expired", exception.ServerMessage);
+        Assert.Equal(MatrixErrorCodes.UnknownToken, exception.ErrorCode);
+    }
+
+    [Fact]
+    public async Task SendAsync_TreatsMissingSoftLogoutAsFalse()
+    {
+        var handler = new StubHttpMessageHandler(HttpStatusCode.Unauthorized, """{"errcode":"M_UNKNOWN_TOKEN"}""");
+
+        var exception = await Assert.ThrowsAsync<MatrixUnknownTokenException>(() =>
+            CreateTransport(handler).SendAsync<WhoAmI>(HttpMethod.Get, Path, AuthRequirement.None, TestContext.Current.CancellationToken));
+
+        Assert.False(exception.SoftLogout);
+    }
+
+    [Fact]
+    public async Task SendAsync_MapsUserLocked()
+    {
+        var handler = new StubHttpMessageHandler(HttpStatusCode.Unauthorized,
+            """{"errcode":"M_USER_LOCKED","error":"This account has been locked","soft_logout":true}""");
+
+        var exception = await Assert.ThrowsAsync<MatrixUserLockedException>(() =>
+            CreateTransport(handler).SendAsync<WhoAmI>(HttpMethod.Get, Path, AuthRequirement.None, TestContext.Current.CancellationToken));
+
+        Assert.True(exception.SoftLogout);
+        Assert.Equal(MatrixErrorCodes.UserLocked, exception.ErrorCode);
+    }
+
+    [Fact]
+    public async Task SendAsync_KeepsSuspensionAsPlainMatrixException()
+    {
+        var handler = new StubHttpMessageHandler(HttpStatusCode.Forbidden, """{"errcode":"M_USER_SUSPENDED"}""");
+
+        var exception = await Assert.ThrowsAsync<MatrixException>(() =>
+            CreateTransport(handler).SendAsync<WhoAmI>(HttpMethod.Get, Path, AuthRequirement.None, TestContext.Current.CancellationToken));
+
+        Assert.Equal(MatrixErrorCodes.UserSuspended, exception.ErrorCode);
+    }
+
     /// <summary>Waits before answering, and honours cancellation while waiting.</summary>
     private sealed class DelayingHandler(TimeSpan delay) : HttpMessageHandler
     {

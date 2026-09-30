@@ -47,7 +47,10 @@ and is not part of the repository.
 | `LoginFlow` | One entry of `GET /login`'s `flows` |
 | `VersionsResponse` | Response of `GET /versions`: supported spec versions and unstable features |
 | `IIdentifier` / `UserIdentifier` | User identifier objects (`m.id.user`) |
-| `MatrixException` | A Matrix error response (`errcode`, `error`) or a non-Matrix HTTP failure |
+| `MatrixException` | A Matrix error response (`errcode`, `error` as `ServerMessage`) or a non-Matrix HTTP failure |
+| `MatrixUnknownTokenException` | `M_UNKNOWN_TOKEN`, with `SoftLogout` (D13, D21) |
+| `MatrixUserLockedException` | `M_USER_LOCKED`, with `SoftLogout` (D13, D22) |
+| `MatrixClientState` | `Active`, `LoggedOut` or `Invalidated` (D21) |
 | `MatrixErrorCodes` | Constants for every error code defined by the spec, for exception filters |
 | `Transport.MatrixTransport` (internal) | The single path every request goes through (D9, D16) |
 | `Transport.AuthRequirement` (internal) | Whether an endpoint needs an access token: `None`, `Optional` or `Required` |
@@ -726,13 +729,29 @@ authentication-related errors do not invalidate the session:
 
 After logout or invalidation:
 
-- The tokens are cleared, and the client is in a logged-out state.
+- `State` becomes `LoggedOut` or `Invalidated`. The `Session` property throws
+  `InvalidOperationException`, so the dead tokens cannot be picked up and reused.
+  `MatrixSession` requires an access token, so it cannot be emptied instead.
 - `UserId` and `DeviceId` stay readable, so the app knows which account ended. For example,
   it can remove the account from a list.
 - Every endpoint call throws `InvalidOperationException`. This includes the endpoints shared
   with `MatrixServer` (D19): they do not silently fall back to unauthenticated requests.
   To call them without a session, use `MatrixServer`.
 - A new login produces a new session and a new `MatrixClient`.
+
+How `LogoutAsync` treats failures:
+
+- **`M_UNKNOWN_TOKEN` counts as success.** The token is already invalid, which is what
+  logging out achieves; Element does the same.
+- **Any other failure,** e.g. a network error or a 5xx response, throws and leaves the client
+  `Active`, so the logout can be retried.
+
+Every endpoint call goes through one wrapper in `MatrixClient`. It checks the state before
+sending and handles a rejected token (D12). A shared endpoint (D19) therefore invalidates the
+session just like any other endpoint.
+
+When the client's own message replaces the homeserver's (D12), the original text stays
+available as `MatrixException.ServerMessage` and is appended to the message.
 
 **Stateful components own disposal.** The future sync loop, room and state caches, and the
 crypto store are separate types (D20), and they implement `IAsyncDisposable`:
@@ -937,8 +956,7 @@ so none is planned.
 ### Current limitations
 
 - The session design (§3.2) is decided but not implemented:
-  - `MatrixClient` has no logout, invalidation or locked states, session-change
-    notifications or refresh handler yet;
+  - `MatrixClient` has no locked state, session-change notifications or refresh handler yet;
   - the transport sends each request once. There is no refresh-and-retry and no
     `M_UNKNOWN_TOKEN` handling yet.
 - Only `m.id.user` identifiers are supported.

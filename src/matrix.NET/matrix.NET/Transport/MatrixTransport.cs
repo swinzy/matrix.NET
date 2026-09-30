@@ -127,7 +127,14 @@ internal sealed class MatrixTransport
             // Not a Matrix error body, e.g. an HTML page from a reverse proxy
         }
 
-        throw new MatrixException(response.StatusCode, error?.Errcode ?? MatrixErrorCodes.Unknown, error?.Error);
+        var errorCode = error?.Errcode ?? MatrixErrorCodes.Unknown;
+        var softLogout = error?.SoftLogout ?? false;
+        throw errorCode switch
+        {
+            MatrixErrorCodes.UnknownToken => new MatrixUnknownTokenException(response.StatusCode, error?.Error, softLogout),
+            MatrixErrorCodes.UserLocked => new MatrixUserLockedException(response.StatusCode, error?.Error, softLogout),
+            _ => new MatrixException(response.StatusCode, errorCode, error?.Error)
+        };
     }
 
     private static HttpClient CreateSharedClient(bool automaticDecompression) =>
@@ -147,5 +154,5 @@ internal sealed class MatrixTransport
     private static Uri WithTrailingSlash(Uri uri) =>
         uri.AbsolutePath.EndsWith('/') ? uri : new Uri(uri.AbsoluteUri + "/");
 
-    private record ErrorResponse(string Errcode, string? Error);
+    private record ErrorResponse(string Errcode, string? Error, bool? SoftLogout);
 }

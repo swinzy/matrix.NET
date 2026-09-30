@@ -81,18 +81,6 @@ public class MatrixClientTests
         Assert.Null(response.DeviceId);
     }
 
-    [Fact]
-    public async Task WhoAmIAsync_ThrowsOnRejectedToken()
-    {
-        var handler = new StubHttpMessageHandler(HttpStatusCode.Unauthorized,
-            """{"errcode":"M_UNKNOWN_TOKEN","error":"Unrecognised access token."}""");
-
-        var exception = await Assert.ThrowsAsync<MatrixException>(() =>
-            CreateClient(handler).WhoAmIAsync(TestContext.Current.CancellationToken));
-
-        Assert.Equal(MatrixErrorCodes.UnknownToken, exception.ErrorCode);
-    }
-
     // The same endpoint on MatrixServer sends no token (D19)
     [Fact]
     public async Task GetVersionsAsync_SendsToken()
