@@ -50,7 +50,8 @@ and is not part of the repository.
 | `MatrixException` | A Matrix error response (`errcode`, `error` as `ServerMessage`) or a non-Matrix HTTP failure |
 | `MatrixUnknownTokenException` | `M_UNKNOWN_TOKEN`, with `SoftLogout` (D13, D21) |
 | `MatrixUserLockedException` | `M_USER_LOCKED`, with `SoftLogout` (D13, D22) |
-| `MatrixClientState` | `Active`, `LoggedOut` or `Invalidated` (D21) |
+| `MatrixClientState` | `Active`, `Locked`, `LoggedOut` or `Invalidated` (D21, D22) |
+| `SessionChangedEventArgs` / `SessionChangeKind` | Data of `MatrixClient.SessionChanged` (D14) |
 | `MatrixErrorCodes` | Constants for every error code defined by the spec, for exception filters |
 | `Transport.MatrixTransport` (internal) | The single path every request goes through (D9, D16) |
 | `Transport.AuthRequirement` (internal) | Whether an endpoint needs an access token: `None`, `Optional` or `Required` |
@@ -552,12 +553,38 @@ Subclasses so far:
 
 #### D14. Session change notifications (Decided)
 
-`MatrixClient` raises one event for session changes. Its cases are:
+`MatrixClient` raises one event, `SessionChanged`, whose `SessionChangedEventArgs.Kind`
+(`SessionChangeKind`) tells the cases apart:
 
-- **Tokens refreshed:** the app saves the new session.
-- **Session invalidated:** carries `SoftLogout`; the app returns to the login screen (D21).
-- **Account locked** and **account unlocked:** the app hides or restores its normal UI
-  (D22).
+- **Tokens refreshed:** the app saves the new session. This will come with automatic
+  refresh.
+- **Logged out** (`LoggedOut`): the app called `LogoutAsync`. It is raised even though the
+  app initiated it, because several components may care about a session ending, e.g. an
+  account list or a notification service. It is a separate kind from invalidation, so a
+  component that should not react to a deliberate logout can ignore it.
+- **Session invalidated** (`Invalidated`): carries `SoftLogout`; the app returns to the login
+  screen (D21).
+- **Account locked** (`Locked`) and **account unlocked** (`Unlocked`): the app hides or
+  restores its normal UI (D22).
+
+It is a single event with a kind, not one `EventArgs` type per case. Subclasses can be
+introduced later if a case needs data of its own.
+
+Rules:
+
+- **Raised once per change of `State`.** For example, ten requests failing while locked
+  raise `Locked` once.
+- **Raised after the state has changed** and before the triggering call returns or throws,
+  so handlers see the new `State`.
+- **Raised synchronously on the thread that completed the request,** typically a thread pool
+  thread. UI apps must marshal to their UI thread.
+- **Handlers must catch and handle their own exceptions.** The library swallows anything a
+  handler throws. Otherwise a handler's exception would replace the library's own result or
+  error, e.g. hiding a `MatrixUnknownTokenException` behind an unrelated
+  `NullReferenceException` from the handler. Other handlers still run. An `async` handler is
+  compiled as `async void`: anything it throws after its first `await` is beyond the
+  library's reach and may crash the process, so it must wrap its whole body in
+  `try`/`catch`. This is stated in the event's XML documentation.
 
 The event is for UI and other work that does not affect correctness. **It must not be used
 to persist refreshed tokens.** C# events cannot be awaited, so the library could use the new
@@ -811,9 +838,12 @@ Design:
 - **No token refresh is attempted.** Refresh is triggered by `M_UNKNOWN_TOKEN` only, and the
   spec says a new token cannot be obtained until the account is unlocked.
 - **The first `M_USER_LOCKED` response raises the "account locked" notification** (D14).
-- **The first successful authenticated request after that raises "account unlocked".** Any
-  endpoint can detect the unlock; the future sync layer provides the rate-limited polling
-  the spec asks for.
+- **The first successful request to an endpoint that requires authentication raises
+  "account unlocked".** Endpoints with optional authentication, such as `/versions`, do not
+  count: a homeserver may answer them without checking the token, which would report a
+  false unlock. Logout does not count either, since it is allowed while locked. The future
+  sync layer provides the rate-limited polling the spec asks for; the client itself does
+  not throttle.
 - **Logout still works while locked,** as the spec allows.
 
 **Why:** Treating a lock as invalidation would clear a token that is still valid. The app
@@ -973,7 +1003,7 @@ so none is planned.
 ### Current limitations
 
 - The session design (§3.2) is decided but not implemented:
-  - `MatrixClient` has no locked state, session-change notifications or refresh handler yet;
+  - `MatrixClient` has no refresh handler yet, and no tokens-refreshed notification;
   - the transport sends each request once. There is no refresh-and-retry and no
     `M_UNKNOWN_TOKEN` handling yet.
 - Only `m.id.user` identifiers are supported.

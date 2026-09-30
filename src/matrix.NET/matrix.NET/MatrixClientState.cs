@@ -9,6 +9,13 @@ public enum MatrixClientState
     Active,
 
     /// <summary>
+    /// An administrator locked the account. The session stays valid and the client stays usable,
+    /// so requests can detect the unlock; the first successful authenticated request returns the
+    /// client to <see cref="Active"/>.
+    /// </summary>
+    Locked,
+
+    /// <summary>
     /// <see cref="MatrixClient.LogoutAsync"/> succeeded. The client is unusable; only
     /// <see cref="MatrixClient.UserId"/> and <see cref="MatrixClient.DeviceId"/> remain readable.
     /// </summary>

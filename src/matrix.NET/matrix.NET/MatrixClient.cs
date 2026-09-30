@@ -21,6 +21,7 @@ public class MatrixClient : ISharedEndpoints
     // Replaced as a whole when the session changes, e.g. after a token refresh
     private MatrixSession _session;
     private volatile MatrixClientState _state = MatrixClientState.Active;
+    private readonly Lock _stateLock = new();
 
     /// <summary>
     /// Creates a client using the library's shared <see cref="HttpClient"/>.
@@ -77,8 +78,24 @@ public class MatrixClient : ISharedEndpoints
     /// <summary>The lifecycle state of the client.</summary>
     public MatrixClientState State => _state;
 
+    /// <summary>
+    /// Raised once for each change of <see cref="State"/>, after the state has changed and before
+    /// the triggering call returns or throws. Meant for UI and other work that does not affect
+    /// correctness; never use it to persist refreshed tokens.
+    /// </summary>
+    /// <remarks>
+    /// Handlers run synchronously on the thread that completed the request, typically a thread
+    /// pool thread, so UI apps must marshal to their UI thread. Handlers must catch and handle
+    /// their own exceptions: anything a handler throws is swallowed, so it cannot hide the
+    /// library's own result or error. An <c>async</c> handler must wrap its whole body in
+    /// <c>try</c>/<c>catch</c>, because exceptions thrown after its first <c>await</c> cannot be
+    /// caught by the library and may crash the process.
+    /// </remarks>
+    public event EventHandler<SessionChangedEventArgs>? SessionChanged;
+
     /// <summary>The current session, including any tokens refreshed since the client was created.</summary>
     /// <exception cref="InvalidOperationException">The client has logged out or its session was invalidated.</exception>
+    /// <remarks>Remains available while the account is locked, as the tokens stay valid.</remarks>
     public MatrixSession Session
     {
         get
@@ -103,7 +120,7 @@ public class MatrixClient : ISharedEndpoints
     /// logged-in users are included.
     /// </remarks>
     public Task<VersionsResponse> GetVersionsAsync(CancellationToken cancellationToken = default) =>
-        InvokeAsync(_shared.GetVersionsAsync, cancellationToken);
+        InvokeAsync(_shared.GetVersionsAsync, AuthRequirement.Optional, cancellationToken);
 
     /// <summary>
     /// Asks the homeserver who owns the session's access token.
@@ -111,7 +128,7 @@ public class MatrixClient : ISharedEndpoints
     /// <param name="cancellationToken">Cancels the request.</param>
     public Task<WhoAmIResponse> WhoAmIAsync(CancellationToken cancellationToken = default) =>
         InvokeAsync(ct => _transport.SendAsync<WhoAmIResponse>(HttpMethod.Get, "_matrix/client/v3/account/whoami",
-            AuthRequirement.Required, ct), cancellationToken);
+            AuthRequirement.Required, ct), AuthRequirement.Required, cancellationToken);
 
     /// <summary>
     /// Logs out, invalidating the session's tokens and device on the homeserver. Afterwards the
@@ -120,7 +137,7 @@ public class MatrixClient : ISharedEndpoints
     /// <remarks>
     /// If the homeserver no longer recognises the token, the session is already gone, so this
     /// counts as success. Other failures, e.g. network errors, throw and leave the client usable,
-    /// so the logout can be retried.
+    /// so the logout can be retried. Logging out also works while the account is locked.
     /// </remarks>
     /// <param name="cancellationToken">Cancels the request.</param>
     /// <exception cref="InvalidOperationException">The client has already logged out or been invalidated.</exception>
@@ -137,21 +154,37 @@ public class MatrixClient : ISharedEndpoints
             // The token is already invalid, which is what logging out achieves
         }
 
-        _state = MatrixClientState.LoggedOut;
+        TryChangeState(MatrixClientState.LoggedOut, new SessionChangedEventArgs(SessionChangeKind.LoggedOut));
     }
 
-    // Every endpoint goes through here, so state checks and token rejection apply uniformly
-    private async Task<T> InvokeAsync<T>(Func<CancellationToken, Task<T>> call, CancellationToken cancellationToken)
+    // Every endpoint goes through here, so state checks, token rejection and locking apply uniformly
+    private async Task<T> InvokeAsync<T>(Func<CancellationToken, Task<T>> call, AuthRequirement auth,
+        CancellationToken cancellationToken)
     {
         EnsureUsable();
+        T result;
         try
         {
-            return await call(cancellationToken);
+            result = await call(cancellationToken);
         }
         catch (MatrixUnknownTokenException e)
         {
             throw OnTokenRejected(e);
         }
+        catch (MatrixUserLockedException)
+        {
+            TryChangeState(MatrixClientState.Locked, new SessionChangedEventArgs(SessionChangeKind.Locked),
+                MatrixClientState.Active);
+            throw;
+        }
+
+        // Only an endpoint that requires a token proves the lock is lifted; an optional one may have
+        // been answered without looking at the token
+        if (auth == AuthRequirement.Required)
+            TryChangeState(MatrixClientState.Active, new SessionChangedEventArgs(SessionChangeKind.Unlocked),
+                MatrixClientState.Locked);
+
+        return result;
     }
 
     private Exception OnTokenRejected(MatrixUnknownTokenException rejection)
@@ -164,7 +197,8 @@ public class MatrixClient : ISharedEndpoints
                 "Automatic token refresh is not implemented yet. Set ClientOptions.AutoRefreshToken to false to disable it.",
                 rejection);
 
-        _state = MatrixClientState.Invalidated;
+        TryChangeState(MatrixClientState.Invalidated,
+            new SessionChangedEventArgs(SessionChangeKind.Invalidated, rejection.SoftLogout));
         var message = hasRefreshToken
             ? "The access token is no longer valid and automatic token refresh is disabled. Refresh the session manually or log in again."
             : "The access token is no longer valid and the session has no refresh token. Log in again.";
@@ -173,6 +207,45 @@ public class MatrixClient : ISharedEndpoints
 
         return new MatrixUnknownTokenException(rejection.StatusCode, rejection.ServerMessage, rejection.SoftLogout,
             message, rejection);
+    }
+
+    /// <summary>
+    /// Moves to <paramref name="to"/> and raises <see cref="SessionChanged"/>, unless the session has
+    /// already ended or, when <paramref name="from"/> is given, the current state differs from it.
+    /// Returns whether the state changed, so each change is announced exactly once.
+    /// </summary>
+    private bool TryChangeState(MatrixClientState to, SessionChangedEventArgs change, MatrixClientState? from = null)
+    {
+        lock (_stateLock)
+        {
+            var current = _state;
+            if (current is MatrixClientState.LoggedOut or MatrixClientState.Invalidated || current == to ||
+                (from is not null && current != from))
+                return false;
+
+            _state = to;
+        }
+
+        RaiseSessionChanged(change);
+        return true;
+    }
+
+    private void RaiseSessionChanged(SessionChangedEventArgs change)
+    {
+        if (SessionChanged is not { } handlers)
+            return;
+
+        foreach (var handler in handlers.GetInvocationList().Cast<EventHandler<SessionChangedEventArgs>>())
+        {
+            try
+            {
+                handler(this, change);
+            }
+            catch
+            {
+                // Handlers must handle their own errors; see SessionChanged
+            }
+        }
     }
 
     private void EnsureUsable()
