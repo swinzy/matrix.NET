@@ -33,6 +33,7 @@ public class LoginIntegrationTests
         Assert.StartsWith("@", response.UserId);
         Assert.NotEmpty(response.AccessToken);
         Assert.NotEmpty(response.DeviceId);
+        Assert.Equal(new Uri(_settings.Homeserver!), response.Homeserver);
         if (_settings.DeviceId is not null)
             Assert.Equal(_settings.DeviceId, response.DeviceId);
     }

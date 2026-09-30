@@ -39,7 +39,9 @@ and is not part of the repository.
 |---|---|
 | `MatrixServer` | Unauthenticated endpoints of a homeserver: supported login types, login |
 | `MatrixClient` | Authenticated endpoints; placeholder until the session design (§3.2) is implemented |
-| `LoginRequest` / `LoginResponse` | Body of `POST /login` and its 200 response |
+| `LoginRequest` | Body of `POST /login` |
+| `MatrixSession` | A logged-in session: homeserver, user and device IDs, tokens, expiry (D11) |
+| `LoginResponse` (internal) | Wire format of the `POST /login` response, turned into a `MatrixSession` |
 | `LoginFlow` | One entry of `GET /login`'s `flows` |
 | `VersionsResponse` | Response of `GET /versions`: supported spec versions and unstable features |
 | `IIdentifier` / `UserIdentifier` | User identifier objects (`m.id.user`) |
@@ -424,9 +426,33 @@ Its `ToString()` hides the tokens.
 
 Apps persist `MatrixSession` for long periods (D17, D23), so **its serialised form is a
 compatibility contract**. If a later version changed it incompatibly, every user would be
-logged out after upgrading. How to guarantee this is still open. Two options: add fields
-only and never change existing ones, or include a format version that the library can read
-older versions of.
+logged out after upgrading. A contract only holds if the library controls the format, but
+apps may serialise the record with their own `JsonSerializerOptions`, e.g. camelCase or
+PascalCase names. Three layers protect it:
+
+- **Fixed field names.** Every property has `[JsonPropertyName("user_id")]` and so on.
+  Attributes take precedence over naming policies, so any serialiser options produce the
+  same names.
+- **A format version** (`"format_version": 1`).
+  - Fields are only ever added; that does not change the version.
+  - An incompatible change would raise it, and the library would keep reading older
+    versions.
+  - `FromJson` rejects a version newer than the library understands, e.g. after a
+    downgrade, with a clear `JsonException` rather than a half-parsed session.
+  - A missing version reads as 1.
+  - Unknown fields are ignored, so a session written by a newer library with only added
+    fields still loads.
+- **`ToJson()` and `MatrixSession.FromJson(string)` helpers.** Apps can store a string
+  without choosing serialiser options at all. This defines a format, not a storage
+  location, so it stays within D17 and D23.
+
+It is a `sealed record`, so a refresh can produce a new session with
+`session with { AccessToken = ..., RefreshToken = ... }` without mutating the old one. Its
+`ToString()` is overridden, because the generated one would print the tokens.
+
+`MatrixServer.LoginAsync` returns a `MatrixSession` (D6). It builds the session from the
+homeserver URL and the login response, converting `expires_in_ms` to an absolute time on
+receipt. `LoginResponse` is internal wire format only.
 
 #### D12. Automatic token refresh: on by default, can be turned off (Decided)
 
@@ -889,7 +915,6 @@ so none is planned.
 ### Current limitations
 
 - The session design (§3.2) is decided but not implemented:
-  - `MatrixServer.LoginAsync` still returns `LoginResponse`;
   - `MatrixClient` is empty, with no authenticated endpoints, including logout;
   - the transport sends each request once. There is no refresh-and-retry and no
     `M_UNKNOWN_TOKEN` handling yet.

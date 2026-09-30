@@ -84,13 +84,17 @@ public class LoginTests
         var handler = new StubHttpMessageHandler(HttpStatusCode.OK,
             """{"user_id":"@cheeky_monkey:matrix.org","access_token":"abc123","refresh_token":"def456","expires_in_ms":60000,"device_id":"GHTYAJCE","home_server":"matrix.org"}""");
 
-        var response = await CreateServer(handler).LoginAsync(PasswordLogin(), TestContext.Current.CancellationToken);
+        var before = DateTimeOffset.UtcNow;
+        var session = await CreateServer(handler).LoginAsync(PasswordLogin(), TestContext.Current.CancellationToken);
+        var after = DateTimeOffset.UtcNow;
 
-        Assert.Equal("@cheeky_monkey:matrix.org", response.UserId);
-        Assert.Equal("abc123", response.AccessToken);
-        Assert.Equal("GHTYAJCE", response.DeviceId);
-        Assert.Equal("def456", response.RefreshToken);
-        Assert.Equal(60000, response.ExpiresInMs);
+        Assert.Equal(new Uri("https://matrix.example.org/"), session.Homeserver);
+        Assert.Equal("@cheeky_monkey:matrix.org", session.UserId);
+        Assert.Equal("abc123", session.AccessToken);
+        Assert.Equal("GHTYAJCE", session.DeviceId);
+        Assert.Equal("def456", session.RefreshToken);
+        // expires_in_ms is converted to an absolute time when the response arrives
+        Assert.InRange(session.ExpiresAt!.Value, before.AddMilliseconds(60000), after.AddMilliseconds(60000));
     }
 
     [Fact]
@@ -98,10 +102,10 @@ public class LoginTests
     {
         var handler = new StubHttpMessageHandler(HttpStatusCode.OK, MinimalResponse);
 
-        var response = await CreateServer(handler).LoginAsync(PasswordLogin(), TestContext.Current.CancellationToken);
+        var session = await CreateServer(handler).LoginAsync(PasswordLogin(), TestContext.Current.CancellationToken);
 
-        Assert.Null(response.RefreshToken);
-        Assert.Null(response.ExpiresInMs);
+        Assert.Null(session.RefreshToken);
+        Assert.Null(session.ExpiresAt);
     }
 
     [Fact]

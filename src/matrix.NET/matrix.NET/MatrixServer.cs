@@ -62,9 +62,27 @@ public class MatrixServer : ISharedEndpoints
         return response.Flows ?? [];
     }
 
-    public Task<LoginResponse> LoginAsync(LoginRequest request, CancellationToken cancellationToken = default) =>
-        _transport.SendAsync<LoginRequest, LoginResponse>(HttpMethod.Post,
+    /// <summary>
+    /// Logs in and returns the new session. The app is responsible for saving it (D23).
+    /// </summary>
+    /// <param name="request">Login type and credentials.</param>
+    /// <param name="cancellationToken">Cancels the request.</param>
+    public async Task<MatrixSession> LoginAsync(LoginRequest request, CancellationToken cancellationToken = default)
+    {
+        var response = await _transport.SendAsync<LoginRequest, LoginResponse>(HttpMethod.Post,
             "_matrix/client/v3/login", request, AuthRequirement.None, cancellationToken);
+
+        return new MatrixSession
+        {
+            Homeserver = _transport.Homeserver,
+            UserId = response.UserId,
+            DeviceId = response.DeviceId,
+            AccessToken = response.AccessToken,
+            RefreshToken = response.RefreshToken,
+            // The spec gives a relative lifetime, which is meaningless once persisted (D11)
+            ExpiresAt = response.ExpiresInMs is { } lifetime ? DateTimeOffset.UtcNow.AddMilliseconds(lifetime) : null
+        };
+    }
 
     private record LoginFlowsResponse(List<LoginFlow>? Flows);
 }
