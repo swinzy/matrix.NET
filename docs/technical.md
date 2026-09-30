@@ -742,7 +742,24 @@ After logout or invalidation:
 How `LogoutAsync` treats failures:
 
 - **`M_UNKNOWN_TOKEN` counts as success.** The token is already invalid, which is what
-  logging out achieves; Element does the same.
+  logging out achieves; Element does the same. This happens when the token died before the
+  logout:
+  - the device was logged out or deleted elsewhere, e.g. after a password change or by an
+    administrator;
+  - the app restored a stored session that had ended while it was offline;
+  - another login reused the same device ID;
+  - another process logged out the same session first;
+  - a retried logout whose first attempt succeeded but whose response was lost.
+
+  Returning 401 here is correct for the homeserver. `/logout` authenticates first, and an
+  unknown token cannot be told apart from a forged one. Idempotency in HTTP (RFC 9110)
+  concerns the effect, not the response: a repeated `DELETE` may answer 404. OAuth token
+  revocation (RFC 7009), which the spec's OAuth 2.0 API uses for logout, chose the other way
+  and answers 200 for invalid tokens: "the client cannot handle such an error in a
+  reasonable way. Moreover, the purpose of the revocation request, invalidating the
+  particular token, is already achieved." The client adopts that reasoning, so
+  `LogoutAsync` behaves the same whichever login API the session came from. Throwing would
+  also leave the user unable to log out at all, as every retry fails the same way.
 - **Any other failure,** e.g. a network error or a 5xx response, throws and leaves the client
   `Active`, so the logout can be retried.
 
