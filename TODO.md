@@ -39,6 +39,9 @@ adds the rest of what it requires of Web, Desktop and Mobile clients.
 
 - [ ] Server discovery (`/.well-known/matrix/client`)
 - [x] Supported spec versions (`GET /versions`)
+- [ ] Compatibility with older homeservers: a minimum supported spec version, feature
+      detection through `/versions`, `unstable_features` and `/capabilities`, and clear errors
+      for features the homeserver does not support
 - [ ] Rate limit handling (`M_LIMIT_EXCEEDED`, `retry_after_ms`, `Retry-After`)
 - [ ] Capabilities negotiation (`GET /capabilities`)
 - [ ] Filtering (`POST /user/{userId}/filter`, lazy-loading room members)
