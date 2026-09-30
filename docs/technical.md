@@ -105,6 +105,9 @@ written twice. Adding `m.id.thirdparty` or `m.id.phone` means adding a class and
 - **Integration tests** run against a real homeserver configured in
   `matrix.NET.Tests/testsettings.json` (git-ignored; see `testsettings.example.json`) or
   `MATRIX_TEST_*` environment variables. They are skipped when not configured.
+  Use your own homeserver, ideally one dedicated to testing, with a test account. Logins
+  are rate limited per account, so repeated runs against a shared server can lock the
+  account out of logging in for a while.
 - **A run logs in at most once.** `LoggedInClientFixture` is an xUnit assembly fixture that
   logs in lazily, on the first test asking for a client. Every integration test that needs a
   session shares it, which keeps the run within the homeserver's login rate limit. Runs
