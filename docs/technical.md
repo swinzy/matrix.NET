@@ -38,7 +38,9 @@ and is not part of the repository.
 | Type | Role |
 |---|---|
 | `MatrixServer` | Unauthenticated endpoints of a homeserver: supported login types, login |
-| `MatrixClient` | Authenticated endpoints; placeholder until the session design (§3.2) is implemented |
+| `MatrixClient` | Authenticated endpoints through a `MatrixSession`: `WhoAmIAsync` and the shared endpoints so far |
+| `ClientOptions` | Options for `MatrixClient`: automatic token refresh, automatic decompression |
+| `WhoAmIResponse` | Response of `GET /account/whoami` |
 | `LoginRequest` | Body of `POST /login` |
 | `MatrixSession` | A logged-in session: homeserver, user and device IDs, tokens, expiry (D11) |
 | `LoginResponse` (internal) | Wire format of the `POST /login` response, turned into a `MatrixSession` |
@@ -103,8 +105,18 @@ written twice. Adding `m.id.thirdparty` or `m.id.phone` means adding a class and
 - **Integration tests** run against a real homeserver configured in
   `matrix.NET.Tests/testsettings.json` (git-ignored; see `testsettings.example.json`) or
   `MATRIX_TEST_*` environment variables. They are skipped when not configured.
-- The optional `DeviceId` setting makes every test login reuse one device instead of
-  creating a new one per run.
+- **A run logs in at most once.** `LoggedInClientFixture` is an xUnit assembly fixture that
+  logs in lazily, on the first test asking for a client. Every integration test that needs a
+  session shares it, which keeps the run within the homeserver's login rate limit. Runs
+  without such tests never log in. A failed login is cached, so it is not retried by every
+  test.
+- **Tests with notable side effects are explicit** (`[Fact(Explicit = true)]`) and excluded
+  from `dotnet test`. They qualify if their behaviour is unlikely to change with our code,
+  e.g. the wrong-password login, which counts towards the account's rate limit.
+  - Run only them: `dotnet test --explicit only`.
+  - Run everything: `dotnet test --explicit on`.
+- The optional `DeviceId` setting makes the test login reuse one device instead of creating
+  a new one per run.
 
 ## 3. Design decisions
 
@@ -679,8 +691,8 @@ preferred over inheritance.
 
 `GET /versions` is the first shared endpoint. The spec itself illustrates why both sides
 need it: homeservers may advertise some unstable features only to authenticated users.
-`MatrixServer` implements it through `SharedEndpoints`. The `MatrixClient` side follows once
-the client has a session.
+`MatrixServer` and `MatrixClient` both implement it through `SharedEndpoints`; only the
+client's transport has a token source.
 
 #### D21. `MatrixClient` is not disposable; logout makes it unusable (Decided)
 
@@ -906,8 +918,9 @@ so none is planned.
   use MTP syntax, e.g. `dotnet test --filter-class <FullClassName>`.
 - **Integration tests touch a real account.**
   - Without `DeviceId`, each successful login creates a new device.
-  - The wrong-password test counts as a failed login and can trigger rate limiting
-    (`M_LIMIT_EXCEEDED`) if run repeatedly.
+  - Logins are rate limited per account. Logging in once per test was enough to hit
+    `M_LIMIT_EXCEEDED` after a few runs, so tests share one login.
+  - The wrong-password test counts as a failed login, so it is explicit.
   - Reusing a device ID may invalidate that device's earlier tokens.
 - **Login type depends on the homeserver.** Homeservers that only support OAuth 2.0 answer
   `GET /login` with 404 `M_UNRECOGNIZED`, and password login is impossible there.
@@ -915,7 +928,8 @@ so none is planned.
 ### Current limitations
 
 - The session design (§3.2) is decided but not implemented:
-  - `MatrixClient` is empty, with no authenticated endpoints, including logout;
+  - `MatrixClient` has no logout, invalidation or locked states, session-change
+    notifications or refresh handler yet;
   - the transport sends each request once. There is no refresh-and-retry and no
     `M_UNKNOWN_TOKEN` handling yet.
 - Only `m.id.user` identifiers are supported.
