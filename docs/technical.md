@@ -376,6 +376,12 @@ Rules:
     sent, so homeservers answer uncompressed and JSON parsing is unaffected.
 - Caller-supplied clients keep their own settings. Their `Timeout` still applies alongside
   the transport's per-request timeout.
+- **The library never changes the state of any `HttpClient`**, shared or caller-supplied:
+  not `DefaultRequestHeaders`, `BaseAddress`, `Timeout` or anything else. Changing the shared
+  client would affect every account and homeserver in the process, and changing a
+  caller-supplied one would affect the caller's other uses of it. Everything
+  request-specific, including authentication (D16), is set on the individual
+  `HttpRequestMessage`.
 - A `Func<HttpClient>` source is called once per request. With a factory behind it, this is
   how `IHttpClientFactory` is meant to be used.
 - Requests use absolute URIs built from the session's homeserver URL and never rely on
