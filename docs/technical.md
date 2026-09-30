@@ -198,8 +198,9 @@ must also serve users who only want typed access to the Client-Server API. Princ
 - **Thin-library users pay nothing for the full SDK.** They get no hidden I/O, no background
   work, and ideally no dependencies such as a database or crypto library.
 
-How to layer this is still open. The options are opt-in features on the same types,
-separate higher-level types, or separate packages.
+Stateful features live in separate types from `MatrixClient` (D21), because a type cannot
+become disposable only when a feature is enabled. Whether those types also ship as
+separate packages is still open.
 
 **Why:** The SDKs researched are either thin, like the matrix-nio and mautrix-python cores,
 or full, like matrix-rust-sdk. A layered design serves both audiences. It also keeps the
@@ -225,7 +226,7 @@ var server = new MatrixServer(new Uri("https://matrix.example.org/"));
 MatrixSession session = await server.LoginAsync(request);
 
 // Authenticated; owns the session lifecycle. Same constructor for login and restore.
-await using var client = new MatrixClient(session);
+var client = new MatrixClient(session);
 ```
 
 #### D6. `MatrixServer` returns a `MatrixSession` (Decided)
@@ -418,6 +419,12 @@ Its `ToString()` hides the tokens.
   persisted as is, it is meaningless after a restart.
 - Hiding tokens in `ToString()` keeps them out of logs.
 
+Apps persist `MatrixSession` for long periods (D17, D23), so **its serialised form is a
+compatibility contract**. If a later version changed it incompatibly, every user would be
+logged out after upgrading. How to guarantee this is still open. Two options: add fields
+only and never change existing ones, or include a format version that the library can read
+older versions of.
+
 #### D12. Automatic token refresh: on by default, can be turned off (Decided)
 
 Two independent settings control refresh tokens. They live on different types, because
@@ -454,8 +461,10 @@ Rules:
   throws that error without invalidating the session. Only a definite rejection means
   "logged out".
 - The homeserver's own `error` text is kept alongside the library's message.
-- A successful refresh raises the tokens-refreshed notification (D14). Every
-  `MatrixUnknownTokenException` raises the session-invalidated notification.
+- After a successful refresh, the new session is saved through `ISessionPersister` (D23)
+  **before** the new tokens are used. Only then does the tokens-refreshed notification
+  (D14) fire and the failed request get retried. Every `MatrixUnknownTokenException`
+  raises the session-invalidated notification.
 
 **Why:**
 
@@ -474,8 +483,13 @@ Rules:
 `MatrixException` stays the single error type until a specific error needs more than an
 error code. A subclass is added when that happens, not in advance.
 
-The first subclass is `MatrixUnknownTokenException : MatrixException`, which adds a
-`SoftLogout` property.
+Subclasses so far:
+
+- `MatrixUnknownTokenException : MatrixException` (`M_UNKNOWN_TOKEN`), which adds a
+  `SoftLogout` property.
+- `MatrixUserLockedException : MatrixException` (`M_USER_LOCKED`, D22). A locked account
+  means something entirely different from an unknown token: the token remains valid and the
+  state is temporary. So it gets its own type rather than sharing one.
 
 **Why:**
 
@@ -485,16 +499,27 @@ The first subclass is `MatrixUnknownTokenException : MatrixException`, which add
 
 #### D14. Session change notifications (Decided)
 
-`MatrixClient` raises one event for session changes. Its two cases are:
+`MatrixClient` raises one event for session changes. Its cases are:
 
 - **Tokens refreshed:** the app saves the new session.
-- **Session invalidated:** carries `SoftLogout`; the app returns to the login screen.
+- **Session invalidated:** carries `SoftLogout`; the app returns to the login screen (D21).
+- **Account locked** and **account unlocked:** the app hides or restores its normal UI
+  (D22).
+
+The event is for UI and other work that does not affect correctness. **It must not be used
+to persist refreshed tokens.** C# events cannot be awaited, so the library could use the new
+tokens before an asynchronous save finishes. Persistence goes through `ISessionPersister`
+(D23).
 
 **Why:** Four SDKs out of four leave soft logout entirely to the app. rust-sdk's
 session-change stream and save callback are the most usable model, and a single event is
 the idiomatic .NET form.
 
-#### D15. Logout invalidates `MatrixClient` but does not dispose it (Decided)
+#### D15. Logout invalidates `MatrixClient` but does not dispose it (Superseded by D21)
+
+> Superseded by D21. With the shared `HttpClient` (D10), the endpoint-level `MatrixClient`
+> owns nothing that needs disposing, so it no longer implements `IAsyncDisposable`. The
+> analysis of what is still needed after logout carries over to D21.
 
 **Rule:** after logout, release what is no longer needed and keep what is, marking the
 client invalid.
@@ -547,6 +572,8 @@ pass in; only authentication stays out of the handler pipeline. The transport's
 #### D17. Credentials are never persisted by the library (Decided)
 
 The app stores `MatrixSession` wherever it sees fit: keychain, encrypted file, database.
+The library decides only *when* a session must be saved, through `ISessionPersister` (D23).
+It never decides *where* or *how*.
 
 **Why:** Every SDK researched does this. Secure storage is platform-specific: Element Web
 uses encrypted localStorage and Element X uses the system keychain.
@@ -621,6 +648,141 @@ therefore a `MatrixClient`-only feature, not a shared one.
 Since the two sides are expected to diverge, explicit declarations on each type are
 preferred over inheritance.
 
+#### D21. `MatrixClient` is not disposable; logout makes it unusable (Decided)
+
+Replaces D15.
+
+**`MatrixClient` does not implement `IDisposable` or `IAsyncDisposable`.** It owns nothing
+that needs releasing:
+
+- the `HttpClient` is shared or caller-owned (D10);
+- the session is plain data;
+- the future refresh lock needs no disposal in practice.
+
+**After `LogoutAsync`, or after the session is invalidated, the client is unusable.** The
+session counts as invalidated only when the homeserver answers `M_UNKNOWN_TOKEN` and the
+token cannot be refreshed (D12). Only then is the token definitely dead. Other
+authentication-related errors do not invalidate the session:
+
+- **`M_USER_LOCKED`** puts the client in a locked state instead (D22).
+- **`M_USER_SUSPENDED`** is an ordinary `MatrixException`. A suspended account keeps a valid
+  token and may still perform many actions, such as receiving messages, leaving rooms and
+  verifying devices.
+
+After logout or invalidation:
+
+- The tokens are cleared, and the client is in a logged-out state.
+- `UserId` and `DeviceId` stay readable, so the app knows which account ended. For example,
+  it can remove the account from a list.
+- Every endpoint call throws `InvalidOperationException`. This includes the endpoints shared
+  with `MatrixServer` (D19): they do not silently fall back to unauthenticated requests.
+  To call them without a session, use `MatrixServer`.
+- A new login produces a new session and a new `MatrixClient`.
+
+**Stateful components own disposal.** The future sync loop, room and state caches, and the
+crypto store are separate types (D20), and they implement `IAsyncDisposable`:
+
+- When the session ends, they stop background work but keep local data.
+- Methods to clear local data live on these components. After an explicit logout the app
+  can delete the data. After a soft logout it can keep the data and reuse it when logging in
+  again on the same device, as Element does.
+- Apps dispose only the components they enabled.
+
+**Why:**
+
+- **Implementing `IDisposable` is a contract that asks every user to dispose.** Analysers
+  (CA2000) warn when it is not honoured. For thin-library users (D20) this would be pure
+  overhead, because their `MatrixClient` holds nothing to release.
+- **Resources and disposal belong together:** only what starts background work or opens
+  storage needs disposing.
+- **One simple rule after logout, "the client cannot be used":** clearer than some endpoints
+  working and others throwing. It also avoids the JS and rust-sdk problem of a client that
+  still looks logged in.
+
+#### D22. A locked account is a recoverable state, not an invalidated session (Decided)
+
+Administrators can lock an account; it is reversible, unlike deactivation. While the account
+is locked, the homeserver answers almost every endpoint with `401 M_USER_LOCKED` and
+`soft_logout: true`. Unlike `M_UNKNOWN_TOKEN`, the spec says:
+
+- servers SHOULD NOT invalidate the access token, so sessions survive an unlock;
+- clients SHOULD keep session information, including encryption state, and hide the normal
+  UI;
+- clients SHOULD keep making rate-limited requests, e.g. to `/sync`, to detect when the lock
+  is lifted;
+- `POST /logout` and `POST /logout/all` keep working.
+
+Design:
+
+- **The client keeps its tokens and stays usable.** It is in a locked state, not the
+  unusable state of D21.
+- **Locked requests throw `MatrixUserLockedException`** (D13), which carries `SoftLogout`.
+- **No token refresh is attempted.** Refresh is triggered by `M_UNKNOWN_TOKEN` only, and the
+  spec says a new token cannot be obtained until the account is unlocked.
+- **The first `M_USER_LOCKED` response raises the "account locked" notification** (D14).
+- **The first successful authenticated request after that raises "account unlocked".** Any
+  endpoint can detect the unlock; the future sync layer provides the rate-limited polling
+  the spec asks for.
+- **Logout still works while locked,** as the spec allows.
+
+**Why:** Treating a lock as invalidation would clear a token that is still valid. The app
+would then have to recreate the client from its stored session just to detect the unlock,
+contradicting the spec's intent that the same session waits for it.
+
+#### D23. Refreshed sessions are saved through an awaited hook (Decided)
+
+```csharp
+public interface ISessionPersister
+{
+    ValueTask SaveAsync(MatrixSession session, CancellationToken cancellationToken);
+}
+
+var client = new MatrixClient(session, new ClientOptions { SessionPersister = myPersister });
+```
+
+**The problem it solves.** The spec says: "The old refresh token remains valid until the new
+access token or refresh token is used, at which point the old refresh token is revoked. This
+ensures that if a client fails to receive or persist the new tokens, it will be able to
+repeat the refresh operation." Suppose the library used the new tokens before the app had
+saved them, and the app then crashed or was killed:
+
+- the stored session would hold an expired access token and a revoked refresh token;
+- the user would be logged out on the next launch.
+
+This is common on mobile, where the OS kills background apps.
+
+Rules:
+
+- After a refresh, the library awaits `SaveAsync` before it uses the new tokens (D12).
+- **If saving fails, the new tokens are not used,** and the error is thrown to the caller.
+  The old refresh token is still valid, so the next attempt can refresh again.
+- **The persister is required when it matters.** Constructing a `MatrixClient` throws
+  `ArgumentException` when automatic refresh is on, the session has a refresh token and no
+  persister is set. The message names both ways out: set a persister, or turn automatic
+  refresh off. Without a refresh token nothing is ever refreshed, so no persister is needed.
+- **`InMemorySessionPersister`** ships in the core for tests and one-off scripts. It is not a
+  storage solution. It lets an app state explicitly that losing refreshed tokens on restart
+  is acceptable.
+- **Platform secure storage** (DPAPI, Keychain, libsecret, Android Keystore), if ever
+  provided, lives in separate packages (D20). It is never in the core.
+
+**Boundary.** The library owns protocol correctness, including the order "save, then use".
+The app owns where and how sessions are stored, and what happens to stored sessions:
+loading at start-up, deleting after logout, account lists. Hence:
+
+- **Interfaces the app implements contain only methods the library calls.** `SaveAsync` is
+  the only such method. There is no `LoadAsync` or `DeleteAsync`, because the library never
+  loads or deletes sessions.
+- **The name says "persist", not "store",** so it does not invite adding reads later.
+
+**Why an interface rather than a delegate:** a persister is naturally a class, e.g. one per
+platform or registered in DI. It also reads more clearly in `ClientOptions`.
+
+**Why this is not scope creep:** it comes with automatic refresh (D12). Every SDK researched
+that refreshes automatically has such a hook: rust-sdk's `save_session_callback`, Element X's
+`ClientSessionDelegate`, and matrix-js-sdk's `onTokenRefresh`. Refresh happens inside the
+library, so the app cannot enforce the ordering from outside.
+
 ## 4. Pitfalls and limitations
 
 ### Pitfalls
@@ -669,7 +831,7 @@ preferred over inheritance.
 
 The feature roadmap lives in [TODO.md](../TODO.md). Near-term technical work:
 
-1. Implement the session design (D6 to D17, D19): internal transport, `MatrixSession`,
+1. Implement the session design (D6 to D14, D16, D17, D19, D21 to D23): internal transport, `MatrixSession`,
    `ClientOptions`, `MatrixUnknownTokenException` and the `MatrixClient` lifecycle.
 2. Logout and `whoami`, the first authenticated endpoints.
 3. Automatic token refresh (D12).
