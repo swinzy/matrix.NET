@@ -41,11 +41,14 @@ and is not part of the repository.
 | `MatrixClient` | Authenticated endpoints; placeholder until the session design (§3.2) is implemented |
 | `LoginRequest` / `LoginResponse` | Body of `POST /login` and its 200 response |
 | `LoginFlow` | One entry of `GET /login`'s `flows` |
+| `VersionsResponse` | Response of `GET /versions`: supported spec versions and unstable features |
 | `IIdentifier` / `UserIdentifier` | User identifier objects (`m.id.user`) |
 | `MatrixException` | A Matrix error response (`errcode`, `error`) or a non-Matrix HTTP failure |
 | `MatrixErrorCodes` | Constants for every error code defined by the spec, for exception filters |
 | `Transport.MatrixTransport` (internal) | The single path every request goes through (D9, D16) |
 | `Transport.AuthRequirement` (internal) | Whether an endpoint needs an access token: `None`, `Optional` or `Required` |
+| `Transport.ISharedEndpoints` (internal) | Endpoints usable with or without a session, implemented by both public types (D19) |
+| `Transport.SharedEndpoints` (internal) | The single implementation of those endpoints |
 
 ### Request pipeline
 
@@ -647,6 +650,11 @@ therefore a `MatrixClient`-only feature, not a shared one.
 
 Since the two sides are expected to diverge, explicit declarations on each type are
 preferred over inheritance.
+
+`GET /versions` is the first shared endpoint. The spec itself illustrates why both sides
+need it: homeservers may advertise some unstable features only to authenticated users.
+`MatrixServer` implements it through `SharedEndpoints`. The `MatrixClient` side follows once
+the client has a session.
 
 #### D21. `MatrixClient` is not disposable; logout makes it unusable (Decided)
 

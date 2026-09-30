@@ -2,9 +2,10 @@ using TeamBanana.MatrixDotNet.Transport;
 
 namespace TeamBanana.MatrixDotNet;
 
-public class MatrixServer
+public class MatrixServer : ISharedEndpoints
 {
     private readonly MatrixTransport _transport;
+    private readonly SharedEndpoints _shared;
 
     /// <summary>
     /// Creates a server using the library's shared <see cref="HttpClient"/>.
@@ -18,6 +19,7 @@ public class MatrixServer
     public MatrixServer(Uri homeserver, bool automaticDecompression = true)
     {
         _transport = new MatrixTransport(homeserver, () => MatrixTransport.GetSharedClient(automaticDecompression));
+        _shared = new SharedEndpoints(_transport);
     }
 
     public MatrixServer(Uri homeserver, HttpClient client)
@@ -39,7 +41,19 @@ public class MatrixServer
     public MatrixServer(Uri homeserver, Func<HttpClient> httpClientSource)
     {
         _transport = new MatrixTransport(homeserver, httpClientSource);
+        _shared = new SharedEndpoints(_transport);
     }
+
+    /// <summary>
+    /// Gets the specification versions and experimental features the homeserver supports.
+    /// </summary>
+    /// <remarks>
+    /// Sent without an access token. Homeservers may advertise some experimental features only
+    /// to logged-in users, so a <see cref="MatrixClient"/> may see more.
+    /// </remarks>
+    /// <param name="cancellationToken">Cancels the request.</param>
+    public Task<VersionsResponse> GetVersionsAsync(CancellationToken cancellationToken = default) =>
+        _shared.GetVersionsAsync(cancellationToken);
 
     public async Task<List<LoginFlow>> GetSupportedLoginTypesAsync(CancellationToken cancellationToken = default)
     {

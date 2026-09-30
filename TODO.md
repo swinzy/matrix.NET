@@ -38,7 +38,7 @@ adds the rest of what it requires of Web, Desktop and Mobile clients.
 ### Core API
 
 - [ ] Server discovery (`/.well-known/matrix/client`)
-- [ ] Supported spec versions (`GET /versions`)
+- [x] Supported spec versions (`GET /versions`)
 - [ ] Rate limit handling (`M_LIMIT_EXCEEDED`, `retry_after_ms`, `Retry-After`)
 - [ ] Capabilities negotiation (`GET /capabilities`)
 - [ ] Filtering (`POST /user/{userId}/filter`, lazy-loading room members)
