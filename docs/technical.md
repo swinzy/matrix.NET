@@ -37,8 +37,9 @@ and is not part of the repository.
 
 | Type | Role |
 |---|---|
-| `MatrixServer` | Unauthenticated endpoints of a homeserver: supported login types, login |
-| `MatrixClient` | Authenticated endpoints through a `MatrixSession`: `WhoAmIAsync` and the shared endpoints so far |
+| `MatrixServer` | Unauthenticated endpoints of a homeserver: supported login types, login and the shared endpoints |
+| `ServerOptions` | Options for `MatrixServer`: automatic decompression (D25) |
+| `MatrixClient` | Authenticated endpoints through a `MatrixSession`: `WhoAmIAsync`, `LogoutAsync` and the shared endpoints so far; lifecycle `State` and `SessionChanged` (D14, D21) |
 | `ClientOptions` | Options for `MatrixClient`: automatic token refresh, automatic decompression |
 | `WhoAmIResponse` | Response of `GET /account/whoami` |
 | `LoginRequest` | Body of `POST /login` |
@@ -373,8 +374,7 @@ Rules:
     reporting must not rely on it; and `Range` requests address compressed bytes if the
     server compresses, so resumable downloads need care.
     Decompression can be turned off for users who need the raw encoded bytes, such as a thin
-    forwarding layer: `new MatrixServer(uri, automaticDecompression: false)`, and the same
-    option on `ClientOptions`. It is a handler-level setting, so it cannot vary per request.
+    forwarding layer: `AutomaticDecompression = false` on `ServerOptions` or `ClientOptions`. It is a handler-level setting, so it cannot vary per request.
     Turning it off selects a second shared client, identical except for decompression, which
     is created only when first needed. Without decompression no `Accept-Encoding` header is
     sent, so homeservers answer uncompressed and JSON parsing is unaffected.
@@ -1022,12 +1022,33 @@ Element does before login.
     refresh entirely, so no endpoint call ever waits for `/versions`; the app refreshes
     when it chooses.
 
-On `MatrixClient` the lifetime lives in `ClientOptions`. Where it lives on `MatrixServer` is
-**still open**. `MatrixServer` has no options object yet, and adding constructor parameters
-one by one does not scale, so a `ServerOptions` type is likely.
+The lifetime is set through the options object of each type: `ClientOptions` on
+`MatrixClient` and `ServerOptions` on `MatrixServer`.
+
+`ServerOptions` mirrors `ClientOptions`:
+
+```csharp
+new MatrixServer(uri);                                  // defaults
+new MatrixServer(uri, new ServerOptions { ... });
+new MatrixServer(uri, httpClient, new ServerOptions { ... });
+new MatrixServer(uri, () => httpClient, new ServerOptions { ... });
+```
+
+- Every constructor takes an optional `ServerOptions` as its last parameter, as every
+  `MatrixClient` constructor does with `ClientOptions`.
+- It is a sealed class with `init`-only properties, exposed as `MatrixServer.Options`.
+- It replaced the `automaticDecompression` constructor parameter, which became
+  `ServerOptions.AutomaticDecompression`.
+- The two options types share no base type. They overlap today (decompression, and the
+  `/versions` cache lifetime), but `ClientOptions` will gain session-only options such as
+  the refresh handler (D23). A shared base would also make the two types assignable to the
+  same parameter, which hides mistakes.
 
 **Why:**
 
+- **An options object on `MatrixServer` too:** adding constructor parameters one by one does
+  not scale, and every new optional parameter would change the constructor signatures. This
+  had to be settled before the first release, as moving options later is a breaking change.
 - **Lazy fetching is what every SDK researched does.**
 - **The cache needs an expiry.** matrix-js-sdk caches forever, and its code carries a TODO
   to add an expiry (issue #1020), because server upgrades go unnoticed until restart.
@@ -1109,10 +1130,12 @@ The library uses only stable features. Unstable, MSC-prefixed paths are never us
 
 ### Current limitations
 
-- The session design (§3.2) is decided but not implemented:
-  - `MatrixClient` has no refresh handler yet, and no tokens-refreshed notification;
-  - the transport sends each request once. There is no refresh-and-retry and no
-    `M_UNKNOWN_TOKEN` handling yet.
+- Automatic token refresh (D12, D23) is not implemented:
+  - there is no refresh handler yet, and no tokens-refreshed notification;
+  - the transport sends each request once. There is no refresh-and-retry on
+    `M_UNKNOWN_TOKEN`.
+- The homeserver compatibility design (§3.3) is not implemented: `/versions` is not cached,
+  there is no cache lifetime option, no minimum version check and no feature detection.
 - Only `m.id.user` identifiers are supported.
 - XML documentation is generated and shipped, so IDEs show it. Warning CS1591, for missing
   documentation, is silenced until all public members are documented.
@@ -1125,11 +1148,10 @@ The library uses only stable features. Unstable, MSC-prefixed paths are never us
 
 The feature roadmap lives in [TODO.md](../TODO.md). Near-term technical work:
 
-1. Implement the session design (D6 to D14, D16, D17, D19, D21 to D23): internal transport, `MatrixSession`,
-   `ClientOptions`, `MatrixUnknownTokenException` and the `MatrixClient` lifecycle.
-2. Logout and `whoami`, the first authenticated endpoints.
-3. Automatic token refresh (D12).
-4. Server discovery through `.well-known/matrix/client`.
+1. Automatic token refresh (D12, D23), including the refresh handler.
+2. Homeserver compatibility (D24 to D26): the `/versions` cache and its lifetime option,
+   the minimum version check and the feature table.
+3. Server discovery through `.well-known/matrix/client`.
 
 Later considerations, not designed yet:
 

@@ -11,19 +11,20 @@ public class MatrixServer : ISharedEndpoints
     /// Creates a server using the library's shared <see cref="HttpClient"/>.
     /// </summary>
     /// <param name="homeserver">Base URL of the homeserver.</param>
-    /// <param name="automaticDecompression">
-    /// Whether compressed responses (GZip, Deflate, Brotli) are requested and decompressed
-    /// automatically. Turn it off only if you need the raw encoded bytes, e.g. when forwarding
-    /// responses unchanged.
-    /// </param>
-    public MatrixServer(Uri homeserver, bool automaticDecompression = true)
+    /// <param name="options">Server options; defaults apply when omitted.</param>
+    public MatrixServer(Uri homeserver, ServerOptions? options = null)
+        : this(homeserver, options, httpClientSource: null)
     {
-        _transport = new MatrixTransport(homeserver, () => MatrixTransport.GetSharedClient(automaticDecompression));
-        _shared = new SharedEndpoints(_transport);
     }
 
-    public MatrixServer(Uri homeserver, HttpClient client)
-        : this(homeserver, () => client)
+    /// <summary>
+    /// Creates a server whose requests use <paramref name="httpClient"/>.
+    /// </summary>
+    /// <param name="homeserver">Base URL of the homeserver.</param>
+    /// <param name="httpClient">A long-lived client, owned and disposed by the caller.</param>
+    /// <param name="options">Server options; defaults apply when omitted.</param>
+    public MatrixServer(Uri homeserver, HttpClient httpClient, ServerOptions? options = null)
+        : this(homeserver, options, httpClientSource: () => httpClient)
     {
     }
 
@@ -38,11 +39,26 @@ public class MatrixServer : ISharedEndpoints
     /// Never create a new client in it, such as <c>() => new HttpClient()</c>: every request would
     /// then open new connections, which is slow and can exhaust sockets under load.
     /// </param>
-    public MatrixServer(Uri homeserver, Func<HttpClient> httpClientSource)
+    /// <param name="options">Server options; defaults apply when omitted.</param>
+    public MatrixServer(Uri homeserver, Func<HttpClient> httpClientSource, ServerOptions? options = null)
+        : this(homeserver, options, (Func<HttpClient>?)httpClientSource)
     {
-        _transport = new MatrixTransport(homeserver, httpClientSource);
+    }
+
+    private MatrixServer(Uri homeserver, ServerOptions? options, Func<HttpClient>? httpClientSource)
+    {
+        ArgumentNullException.ThrowIfNull(homeserver);
+
+        Options = options ?? new ServerOptions();
+
+        var automaticDecompression = Options.AutomaticDecompression;
+        _transport = new MatrixTransport(homeserver,
+            httpClientSource ?? (() => MatrixTransport.GetSharedClient(automaticDecompression)));
         _shared = new SharedEndpoints(_transport);
     }
+
+    /// <summary>The options this server was created with.</summary>
+    public ServerOptions Options { get; }
 
     /// <summary>
     /// Gets the specification versions and experimental features the homeserver supports.

@@ -22,9 +22,9 @@ adds the rest of what it requires of Web, Desktop and Mobile clients.
 - [x] Standard error responses (`errcode` / `error`) mapped to `MatrixException`
 - [x] Discover supported login types (`GET /login`)
 - [x] Password login (`POST /login`, `m.id.user`)
-- [ ] Authenticated requests (`Authorization: Bearer` access token)
-- [ ] Current account information (`GET /account/whoami`)
-- [ ] Logout (`POST /logout`)
+- [x] Authenticated requests (`Authorization: Bearer` access token)
+- [x] Current account information (`GET /account/whoami`)
+- [x] Logout (`POST /logout`)
 - [ ] Refreshing access tokens (`POST /refresh`), automatic by default
 - [ ] Transaction identifiers for idempotent sends
 - [ ] Sync: initial and incremental (`GET /sync` with `since` and `timeout`)
@@ -54,7 +54,7 @@ adds the rest of what it requires of Web, Desktop and Mobile clients.
 - [ ] Soft logout (`M_UNKNOWN_TOKEN` with `soft_logout`)
 - [ ] Logout all devices (`POST /logout/all`)
 - [ ] Third-party (`m.id.thirdparty`) and phone (`m.id.phone`) identifiers
-- [ ] Locked and suspended account errors (`M_USER_LOCKED`, `M_USER_SUSPENDED`)
+- [x] Locked and suspended account errors (`M_USER_LOCKED`, `M_USER_SUSPENDED`)
 
 ### Events and rooms
 
