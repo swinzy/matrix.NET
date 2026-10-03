@@ -191,6 +191,80 @@ public class TokenRefreshTests
         Assert.Equal([WhoAmIPath, RefreshPath, WhoAmIPath], handler.Requests.Select(r => r.Path));
     }
 
+    // Each request gets its own chance to refresh, even when its token came from an earlier refresh
+    [Fact]
+    public async Task TokenFromEarlierRefreshRejected_RefreshesAgain()
+    {
+        var refreshes = 0;
+        var newAccessUses = 0;
+        var handler = new RoutingHandler(request =>
+        {
+            if (request.RequestUri!.AbsolutePath == RefreshPath)
+                return ++refreshes == 1
+                    ? Refreshed
+                    : (HttpStatusCode.OK, """{"access_token":"newer-access","refresh_token":"newer-refresh"}""");
+
+            // new-access works once, then the homeserver revokes it
+            return request.Headers.Authorization?.Parameter switch
+            {
+                "new-access" when ++newAccessUses == 1 => (HttpStatusCode.OK, WhoAmI),
+                "newer-access" => (HttpStatusCode.OK, WhoAmI),
+                _ => UnknownToken
+            };
+        });
+        var client = CreateClient(handler);
+
+        await client.WhoAmIAsync(Ct);
+        await client.WhoAmIAsync(Ct);
+
+        Assert.Equal(2, refreshes);
+        Assert.Equal("newer-access", client.Session.AccessToken);
+        Assert.Equal(MatrixClientState.Active, client.State);
+    }
+
+    // A request that only retried with another request's token has not used its own refresh yet
+    [Fact]
+    public async Task RetryWithOthersTokenRejected_StillRefreshesItself()
+    {
+        var refreshStarted = new TaskCompletionSource();
+        var secondRejected = new TaskCompletionSource();
+        var refreshes = 0;
+        var handler = new RoutingHandler(async request =>
+        {
+            var token = request.Headers.Authorization?.Parameter;
+            switch (request.RequestUri!.AbsolutePath)
+            {
+                case RefreshPath when Interlocked.Increment(ref refreshes) == 1:
+                    refreshStarted.SetResult();
+                    await secondRejected.Task;
+                    return Refreshed;
+                case RefreshPath:
+                    return (HttpStatusCode.OK, """{"access_token":"newer-access","refresh_token":"newer-refresh"}""");
+                case WhoAmIPath:
+                    return token == "new-access" ? (HttpStatusCode.OK, WhoAmI) : UnknownToken;
+                default:
+                    // GET /versions accepts only the token from the second refresh
+                    if (token == "newer-access")
+                        return (HttpStatusCode.OK, """{"versions":["v1.1"]}""");
+                    if (token == "old-access")
+                        secondRejected.SetResult();
+                    return UnknownToken;
+            }
+        });
+        var client = CreateClient(handler);
+
+        // The first request refreshes; the second is rejected while that refresh is in flight
+        var first = client.WhoAmIAsync(Ct);
+        await refreshStarted.Task.WaitAsync(TimeSpan.FromSeconds(10), Ct);
+        var second = client.GetVersionsAsync(Ct);
+
+        await Task.WhenAll(first, second).WaitAsync(TimeSpan.FromSeconds(10), Ct);
+
+        Assert.Equal(2, refreshes);
+        Assert.Equal("newer-access", client.Session.AccessToken);
+        Assert.Equal(MatrixClientState.Active, client.State);
+    }
+
     [Fact]
     public async Task ConcurrentRejections_ShareOneRefresh()
     {

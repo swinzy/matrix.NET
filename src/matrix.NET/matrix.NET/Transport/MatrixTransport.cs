@@ -81,7 +81,7 @@ internal sealed class MatrixTransport
             // when retrying after a token refresh
             using var request = CreateRequest(method, path, body, bodyType, auth);
             using var response = await _clientSource().SendAsync(request, timeoutSource.Token);
-            await EnsureSuccessAsync(response, timeoutSource.Token);
+            await EnsureSuccessAsync(response, request.Headers.Authorization?.Parameter, timeoutSource.Token);
 
             return await response.Content.ReadFromJsonAsync<TResponse>(JsonOptions, timeoutSource.Token)
                    ?? throw new JsonException($"The homeserver returned an empty {typeof(TResponse).Name}.");
@@ -112,7 +112,8 @@ internal sealed class MatrixTransport
         return request;
     }
 
-    private static async Task EnsureSuccessAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+    private static async Task EnsureSuccessAsync(HttpResponseMessage response, string? sentAccessToken,
+        CancellationToken cancellationToken)
     {
         if (response.IsSuccessStatusCode)
             return;
@@ -131,7 +132,10 @@ internal sealed class MatrixTransport
         var softLogout = error?.SoftLogout ?? false;
         throw errorCode switch
         {
-            MatrixErrorCodes.UnknownToken => new MatrixUnknownTokenException(response.StatusCode, error?.Error, softLogout),
+            MatrixErrorCodes.UnknownToken => new MatrixUnknownTokenException(response.StatusCode, error?.Error, softLogout)
+            {
+                RejectedAccessToken = sentAccessToken
+            },
             MatrixErrorCodes.UserLocked => new MatrixUserLockedException(response.StatusCode, error?.Error, softLogout),
             _ => new MatrixException(response.StatusCode, errorCode, error?.Error)
         };

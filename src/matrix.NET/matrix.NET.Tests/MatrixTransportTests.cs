@@ -275,6 +275,17 @@ public class MatrixTransportTests
     }
 
     [Fact]
+    public async Task SendAsync_RecordsTheRejectedTokenFromTheRequestSent()
+    {
+        var handler = new StubHttpMessageHandler(HttpStatusCode.Unauthorized, """{"errcode":"M_UNKNOWN_TOKEN"}""");
+
+        var exception = await Assert.ThrowsAsync<MatrixUnknownTokenException>(() =>
+            CreateTransport(handler, "secret").SendAsync<WhoAmI>(HttpMethod.Get, Path, AuthRequirement.Required, TestContext.Current.CancellationToken));
+
+        Assert.Equal("secret", exception.RejectedAccessToken);
+    }
+
+    [Fact]
     public async Task SendAsync_MapsUserLocked()
     {
         var handler = new StubHttpMessageHandler(HttpStatusCode.Unauthorized,

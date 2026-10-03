@@ -31,4 +31,8 @@ public class MatrixUnknownTokenException : MatrixException
     /// session was destroyed, so local data must be discarded.
     /// </summary>
     public bool SoftLogout { get; }
+
+    // The token the rejected request actually carried, so a refresh can tell whether it is still the
+    // current one. Internal so it never shows up in logs or serialised exceptions
+    internal string? RejectedAccessToken { get; init; }
 }

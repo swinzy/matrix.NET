@@ -208,38 +208,35 @@ public class MatrixClient : ISharedEndpoints
         return result;
     }
 
-    // Retries once after a refresh; a freshly refreshed token that is rejected again is not refreshed again
+    // Each request may refresh once itself. A rejection after that ends the session. Retrying with a
+    // token another request refreshed does not use up that chance, so the outcome does not depend on
+    // whether this request was sent before or after the other refresh. The loop stops: every pass that
+    // does not refresh here follows a real refresh by another request.
     private async Task<T> SendWithRefreshAsync<T>(Func<CancellationToken, Task<T>> call,
         CancellationToken cancellationToken)
     {
-        // A refresh finishing between reading the token and sending makes this stale. The rejection is
-        // then attributed to the old token, which is harmless unless the new one is rejected too.
-        var accessToken = _session.AccessToken;
-        try
+        var refreshed = false;
+        for (;;)
         {
-            return await call(cancellationToken);
-        }
-        catch (MatrixUnknownTokenException e)
-        {
-            await RefreshAsync(accessToken, e, cancellationToken);
-        }
-
-        try
-        {
-            return await call(cancellationToken);
-        }
-        catch (MatrixUnknownTokenException e)
-        {
-            throw Invalidate(e, RefreshFailedMessage);
+            try
+            {
+                return await call(cancellationToken);
+            }
+            catch (MatrixUnknownTokenException e)
+            {
+                if (refreshed)
+                    throw Invalidate(e, RefreshFailedMessage);
+                refreshed = await RefreshAsync(e, cancellationToken);
+            }
         }
     }
 
     /// <summary>
-    /// Refreshes the session after the homeserver rejected <paramref name="rejectedAccessToken"/>, or
-    /// throws what the caller should see if that is impossible.
+    /// Refreshes the session after the homeserver rejected an access token, or throws what the caller
+    /// should see if that is impossible. Returns <see langword="false"/> without refreshing if another
+    /// request has already replaced the rejected token.
     /// </summary>
-    private async Task RefreshAsync(string rejectedAccessToken, MatrixUnknownTokenException rejection,
-        CancellationToken cancellationToken)
+    private async Task<bool> RefreshAsync(MatrixUnknownTokenException rejection, CancellationToken cancellationToken)
     {
         if (_session.RefreshToken is null)
             throw Invalidate(rejection,
@@ -251,12 +248,14 @@ public class MatrixClient : ISharedEndpoints
         await _refreshLock.WaitAsync(cancellationToken);
         try
         {
-            // Another request may have refreshed, or failed to, while this one waited
+            // Another request may have refreshed, or failed to, while this one waited. The token is
+            // compared with the one the request actually sent, which the transport read itself, so a
+            // refresh landing just before sending cannot be mistaken for one that replaced it
             if (_state == MatrixClientState.Invalidated)
                 throw Invalidate(rejection, RefreshFailedMessage);
             EnsureUsable();
-            if (_session.AccessToken != rejectedAccessToken)
-                return;
+            if (_session.AccessToken != rejection.RejectedAccessToken)
+                return false;
 
             var refreshed = await RequestRefreshAsync(_session, cancellationToken);
             // The homeserver revokes the old refresh token once the new tokens are used, so they must
@@ -271,6 +270,7 @@ public class MatrixClient : ISharedEndpoints
 
         if (_state is not (MatrixClientState.LoggedOut or MatrixClientState.Invalidated))
             RaiseSessionChanged(new SessionChangedEventArgs(SessionChangeKind.TokensRefreshed));
+        return true;
     }
 
     private async Task<MatrixSession> RequestRefreshAsync(MatrixSession session, CancellationToken cancellationToken)

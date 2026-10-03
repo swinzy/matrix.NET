@@ -517,14 +517,24 @@ Rules:
   throws that error without invalidating the session. Only a definite rejection means
   "logged out".
 - The homeserver's own `error` text is kept alongside the library's message.
-- The failed request is retried once. If the refreshed token is rejected as well, the
-  session is invalidated with the refresh-failure message instead of being refreshed again.
+- **Each request may refresh once itself.** If it is rejected again after its own refresh,
+  the session is invalidated with the refresh-failure message. Retrying with a token another
+  request refreshed does not use up that chance, so no request loses its refresh because
+  another one refreshed first, and the outcome does not depend on whether a request was sent
+  before or after another refresh.
+  - A request refreshes only when the token it was rejected with is still the current one,
+    so it never adds a refresh of its own beyond that one.
+  - Every retry without its own refresh follows a real refresh by another request, so the
+    loop ends. If the homeserver rejects every new token, the first request to be rejected
+    after its own refresh invalidates the session, and every other request stops.
 - When the refresh itself is rejected, the exception and the notification carry that
   response's `soft_logout`, since it describes the session's final state.
 - A refresh answered with `M_USER_LOCKED` locks the client like any other request (D22).
 - If the response has no new refresh token, the old one is kept, as the spec allows.
 - One lock serialises refreshes. A request rejected for a token that another request has
-  already replaced is retried with the new token without refreshing again. Each caller's
+  already replaced is retried with the new token without refreshing again. The transport
+  records the token each rejected request actually sent, so this comparison is exact even
+  when a refresh lands just before a request is sent. Each caller's
   cancellation token applies to its own wait. Cancelling the caller that is refreshing
   abandons that refresh, and the next waiting caller refreshes instead.
 - `LogoutAsync` never refreshes: an unknown token already counts as logged out (D21).
