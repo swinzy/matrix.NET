@@ -970,6 +970,113 @@ matrix.NET follows the Matrix camp, consistent with D6 and D8. Trixnity is the o
 SDK found in the other camp. No mainstream Matrix SDK offers a library-managed session layer,
 so none is planned.
 
+### 3.3 Homeserver compatibility
+
+Homeservers in use advertise different spec versions. The spec baseline here is v1.19, while
+many deployed servers advertise only up to an earlier version. These decisions were informed
+by reading the source of matrix-js-sdk and Element Web, matrix-rust-sdk (with ruma),
+matrix-nio and mautrix-python in October 2026.
+
+The spec's own rules shape all three decisions:
+
+- A change to `Y` in `vX.Y` is "backwards compatible or 'managed' backwards compatible".
+  Deprecated features may be removed one version later, so a newer version is not
+  guaranteed to contain everything an older one did.
+- A homeserver must implement everything in each version it advertises, deprecated parts
+  included.
+- Removals have happened within v1.x in the Client-Server API. Examples:
+  - v1.2 moved `prev_content` into `unsigned`;
+  - v1.13 removed reply fallbacks;
+  - v1.14 removed the `server_name` parameter of `/join` and `/knock` in favour of `via`;
+  - v1.18 removed the `score` parameter of reporting.
+
+#### D24. Minimum supported spec version: v1.1 (Decided)
+
+matrix.NET supports homeservers advertising v1.1 or later.
+
+**Why:** v1.1 introduced the global `vX.Y` versioning and the `/_matrix/client/v3/...` paths
+that every endpoint here uses. Earlier servers use `r0` paths, which would need a second
+path scheme. Every maintained homeserver implementation supports v1.x. matrix-js-sdk and
+mautrix-python's bridges use the same floor.
+
+The endpoint layer does not refuse requests to older servers. Instead, `VersionsResponse`
+offers a check that apps can run, e.g. on a login screen. It answers whether the homeserver
+meets this library's minimum. A future server discovery step may fail early instead, as
+Element does before login.
+
+#### D25. `/versions` is fetched lazily and cached with an expiry the app controls (Decided)
+
+- **Fetched on first need,** never in a constructor (D8).
+- **Cached per instance.**
+  - `MatrixServer` caches the unauthenticated result and `MatrixClient` the authenticated
+    one. Since v1.10 the two may differ, and separate instances keep them apart without
+    extra logic.
+  - Concurrent callers share one request, as token refresh does (D12).
+- **Expires after one day by default.** After expiry, the next call that needs the versions
+  refreshes them before continuing. There is no background refresh: the endpoint layer
+  starts no hidden work (D20).
+- **The app can take control:**
+  - `RefreshVersionsAsync()` fetches immediately, e.g. at start-up or on the app's own
+    schedule.
+  - The cache lifetime is configurable. `Timeout.InfiniteTimeSpan` disables automatic
+    refresh entirely, so no endpoint call ever waits for `/versions`; the app refreshes
+    when it chooses.
+
+On `MatrixClient` the lifetime lives in `ClientOptions`. Where it lives on `MatrixServer` is
+**still open**. `MatrixServer` has no options object yet, and adding constructor parameters
+one by one does not scale, so a `ServerOptions` type is likely.
+
+**Why:**
+
+- **Lazy fetching is what every SDK researched does.**
+- **The cache needs an expiry.** matrix-js-sdk caches forever, and its code carries a TODO
+  to add an expiry (issue #1020), because server upgrades go unnoticed until restart.
+- **Refresh without a background task.** matrix-rust-sdk expires after one day and
+  refreshes in the background, but that is background work the endpoint layer avoids.
+- **The app decides when to pay the cost.** Letting apps refresh on their own schedule
+  means they can keep every endpoint call equally fast.
+
+#### D26. Feature detection by version ranges, only where the library must choose (Decided)
+
+Differences between homeserver versions fall into three kinds:
+
+| Kind | Example | Handling |
+|---|---|---|
+| Endpoint missing on older servers | Room summaries (v1.15) | Send the request. The homeserver answers 404 or 405 `M_UNRECOGNIZED`, which reaches the caller unchanged as `MatrixException.ErrorCode`. No generic fallback. |
+| Library must choose between alternatives | Authenticated media (v1.11) vs legacy media; `via` vs `server_name` on `/join` | Detect up front from `/versions` |
+| Fields added or removed in responses | New `/sync` fields in v1.16 | Nothing extra: optional fields are nullable, and unknown fields are ignored |
+
+For the second kind, a small declarative table lists each such feature. Each entry records
+the version that added it, the version that removed it if any, and its MSC's `.stable`
+flag.
+
+**The comparison rule:** a feature is supported if any advertised version satisfies
+`added ≤ version < removed`, or if the `.stable` flag is `true` in `unstable_features`.
+Versions are parsed into comparable numbers, `r0.x` counts as v1.0 as in ruma, and
+unparseable entries are ignored.
+
+The library uses only stable features. Unstable, MSC-prefixed paths are never used, but
+`unstable_features` is exposed to apps unchanged.
+
+**Why:**
+
+- **Only the second kind needs detection.** The other two already work, so the table stays
+  small. ruma declares a version history for every endpoint instead. That is thorough, but
+  ruma generates it from code, and maintaining it by hand here would cost too much.
+- **Version ranges rather than exact matches.**
+  - matrix-js-sdk and mautrix-python check whether a version string is present. That misses
+    a server advertising only `v1.12` for a v1.11 feature, and says nothing about removals.
+    It mostly works because servers such as Synapse list every version they support.
+  - Assuming that "newer implies everything older" is also wrong, given the removals above.
+  - Ranges with an optional removal version, as ruma uses, follow the spec's rule that a
+    server implements everything in each version it advertises.
+- **`.stable` flags count** because servers may ship a stable endpoint before advertising
+  the spec version that contains it.
+- **No generic fallback for missing endpoints.** None of the SDKs researched has one, and
+  matrix-js-sdk's per-call-site fallbacks carry Synapse-specific workarounds and expiry
+  notes. A subclass for "not supported" can come later if it needs to carry data such as
+  the required version (D13).
+
 ## 4. Pitfalls and limitations
 
 ### Pitfalls
