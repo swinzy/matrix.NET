@@ -59,6 +59,7 @@ and is not part of the repository.
 | `Transport.AuthRequirement` (internal) | Whether an endpoint needs an access token: `None`, `Optional` or `Required` |
 | `Transport.ISharedEndpoints` (internal) | Endpoints usable with or without a session, implemented by both public types (D19) |
 | `Transport.SharedEndpoints` (internal) | The single implementation of those endpoints |
+| `Compatibility.HomeserverQuirks` (internal) | Every tolerated deviation of a homeserver from the spec (D27) |
 
 ### Request pipeline
 
@@ -513,9 +514,15 @@ When the homeserver rejects the access token with `M_UNKNOWN_TOKEN`:
 
 Rules:
 
-- A refresh that fails for a transient reason, such as a network error or a 5xx response,
-  throws that error without invalidating the session. Only a definite rejection means
-  "logged out".
+- A refresh that fails for a transient reason, such as a network error, a 5xx response or
+  rate limiting, throws that error without invalidating the session. Only a definite
+  rejection means "logged out".
+- **A definite rejection** is what the spec defines, 401 `M_UNKNOWN_TOKEN`, plus any other
+  4xx except rate limiting and `M_USER_LOCKED`. The second part is a workaround for Synapse,
+  which answers a used or expired refresh token with 403 `M_FORBIDDEN`, and it lives in
+  `HomeserverQuirks` (D27). Every definite rejection is reported as
+  `MatrixUnknownTokenException`, keeping the original as the inner exception, so apps handle
+  every ended session alike.
 - The homeserver's own `error` text is kept alongside the library's message.
 - **Each request may refresh once itself.** If it is rejected again after its own refresh,
   the session is invalidated with the refresh-failure message. Retrying with a token another
@@ -527,8 +534,16 @@ Rules:
   - Every retry without its own refresh follows a real refresh by another request, so the
     loop ends. If the homeserver rejects every new token, the first request to be rejected
     after its own refresh invalidates the session, and every other request stops.
-- When the refresh itself is rejected, the exception and the notification carry that
-  response's `soft_logout`, since it describes the session's final state.
+- **When the refresh itself is rejected, `SoftLogout` comes from that response,** not from
+  the earlier rejection of the access token. The spec says so explicitly: "If the token
+  refresh fails and the error response included a `soft_logout: true` property, then the
+  client can treat it as a soft logout … If the error response does not include a
+  `soft_logout: true` property, the client should consider the user as being logged out."
+  - A rejection without the property, including Synapse's 403, therefore reports
+    `SoftLogout = false`.
+  - matrix-js-sdk, and so Element Web, reports the access token's rejection instead, which
+    usually carries `soft_logout: true`. That keeps local data where the spec says to discard
+    it. This library follows the spec; the app decides what to do with local data.
 - A refresh answered with `M_USER_LOCKED` locks the client like any other request (D22).
 - If the response has no new refresh token, the old one is kept, as the spec allows.
 - One lock serialises refreshes. A request rejected for a token that another request has
@@ -1003,7 +1018,7 @@ many deployed servers advertise only up to an earlier version. These decisions w
 by reading the source of matrix-js-sdk and Element Web, matrix-rust-sdk (with ruma),
 matrix-nio and mautrix-python in October 2026.
 
-The spec's own rules shape all three decisions:
+The spec's own rules shape D24 to D26:
 
 - A change to `Y` in `vX.Y` is "backwards compatible or 'managed' backwards compatible".
   Deprecated features may be removed one version later, so a newer version is not
@@ -1123,6 +1138,41 @@ The library uses only stable features. Unstable, MSC-prefixed paths are never us
   matrix-js-sdk's per-call-site fallbacks carry Synapse-specific workarounds and expiry
   notes. A subclass for "not supported" can come later if it needs to carry data such as
   the required version (D13).
+
+#### D27. Deviations from the spec are tolerated in one place, by name (Decided)
+
+The library implements the spec. Where a homeserver deviates from it and the library must
+cope, the workaround lives in `Compatibility.HomeserverQuirks`, never inline in the code that
+implements the spec. Each entry:
+
+- names the homeserver implementation;
+- quotes the spec text it deviates from;
+- states where the behaviour was confirmed, e.g. a source file and the date it was checked.
+
+The calling code keeps the spec's rule as written and consults the quirk only as an extra
+case, e.g. `catch (MatrixException e) when (HomeserverQuirks.IsFinalRefreshFailure(e))` after
+the spec's own `M_UNKNOWN_TOKEN` handling.
+
+An entry may be broader than the one deviation that prompted it, when that is the safer
+behaviour, but it still names that deviation as its reason.
+
+Entries so far:
+
+| Entry | Spec | Deviation | Handling |
+|---|---|---|---|
+| `IsFinalRefreshFailure` | `/refresh` answers an unknown or used refresh token with 401 `M_UNKNOWN_TOKEN`; MSC2918 says "must" | Synapse answers 403 `M_FORBIDDEN` for a used or expired refresh token (`AuthHandler.refresh_token`, `synapse/handlers/auth.py`, checked October 2026) | Any 4xx except rate limiting and `M_USER_LOCKED` ends the session (D12) |
+
+**Why:**
+
+- **The spec stays readable in the code.** Reading the refresh logic shows what the spec
+  requires; the workarounds are visibly separate and can be removed when no longer needed.
+- **Each workaround can be traced and reviewed.** Naming the implementation and the source
+  makes it possible to check later whether the deviation still exists, or to report it
+  upstream.
+- **Broad where it is safer.** For `/refresh`, matching Synapse's exact error code would
+  leave the client refreshing and failing on every request whenever another homeserver
+  deviates differently. Ending the session costs a new login; missing a final failure costs
+  a client stuck in a loop that survives restarts.
 
 ## 4. Pitfalls and limitations
 

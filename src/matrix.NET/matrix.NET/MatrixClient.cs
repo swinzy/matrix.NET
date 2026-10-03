@@ -1,3 +1,4 @@
+using TeamBanana.MatrixDotNet.Compatibility;
 using TeamBanana.MatrixDotNet.Transport;
 
 namespace TeamBanana.MatrixDotNet;
@@ -287,6 +288,10 @@ public class MatrixClient : ISharedEndpoints
             // The refresh token is unknown or already used. Unlike a network error, this is final
             throw Invalidate(e, RefreshFailedMessage);
         }
+        catch (MatrixException e) when (HomeserverQuirks.IsFinalRefreshFailure(e))
+        {
+            throw Invalidate(e, RefreshFailedMessage);
+        }
 
         return session with
         {
@@ -302,14 +307,21 @@ public class MatrixClient : ISharedEndpoints
     /// Ends the session after a final token rejection and returns the exception to throw, carrying
     /// <paramref name="message"/> followed by the homeserver's own text.
     /// </summary>
-    private MatrixUnknownTokenException Invalidate(MatrixUnknownTokenException rejection, string message)
+    /// <remarks>
+    /// A rejection other than <c>M_UNKNOWN_TOKEN</c> (see <see cref="HomeserverQuirks"/>) is still
+    /// reported as <see cref="MatrixUnknownTokenException"/>, so apps handle every ended session alike;
+    /// the original stays available as the inner exception. It carries no <c>soft_logout</c>, which
+    /// the spec says means logged out.
+    /// </remarks>
+    private MatrixUnknownTokenException Invalidate(MatrixException rejection, string message)
     {
+        var softLogout = rejection is MatrixUnknownTokenException { SoftLogout: true };
         TryChangeState(MatrixClientState.Invalidated,
-            new SessionChangedEventArgs(SessionChangeKind.Invalidated, rejection.SoftLogout));
+            new SessionChangedEventArgs(SessionChangeKind.Invalidated, softLogout));
         if (rejection.ServerMessage is not null)
             message += $" Homeserver: {rejection.ServerMessage}";
 
-        return new MatrixUnknownTokenException(rejection.StatusCode, rejection.ServerMessage, rejection.SoftLogout,
+        return new MatrixUnknownTokenException(rejection.StatusCode, rejection.ServerMessage, softLogout,
             message, rejection);
     }
 

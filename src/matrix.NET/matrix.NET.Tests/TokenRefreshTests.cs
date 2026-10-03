@@ -154,6 +154,40 @@ public class TokenRefreshTests
         Assert.Equal([(SessionChangeKind.Invalidated, false)], changes);
     }
 
+    // Synapse answers a used or expired refresh token with 403 M_FORBIDDEN instead of M_UNKNOWN_TOKEN
+    [Theory]
+    [InlineData("refresh token isn't valid anymore")]
+    [InlineData("The supplied refresh token has expired")]
+    public async Task SynapseRefreshRejection_InvalidatesSession(string serverMessage)
+    {
+        var client = CreateClient(CreateHomeserver(
+            (HttpStatusCode.Forbidden, $$"""{"errcode":"M_FORBIDDEN","error":"{{serverMessage}}"}""")));
+        var changes = new List<(SessionChangeKind, bool)>();
+        client.SessionChanged += (_, e) => changes.Add((e.Kind, e.SoftLogout));
+
+        var exception = await Assert.ThrowsAsync<MatrixUnknownTokenException>(() => client.WhoAmIAsync(Ct));
+
+        Assert.StartsWith("The access token expired and could not be refreshed. Log in again.", exception.Message);
+        Assert.Equal(HttpStatusCode.Forbidden, exception.StatusCode);
+        Assert.Equal(serverMessage, exception.ServerMessage);
+        Assert.False(exception.SoftLogout);
+        Assert.Equal(MatrixErrorCodes.Forbidden, Assert.IsType<MatrixException>(exception.InnerException).ErrorCode);
+        Assert.Equal(MatrixClientState.Invalidated, client.State);
+        Assert.Equal([(SessionChangeKind.Invalidated, false)], changes);
+    }
+
+    [Fact]
+    public async Task RateLimitedRefresh_ThrowsWithoutInvalidating()
+    {
+        var client = CreateClient(CreateHomeserver(
+            ((HttpStatusCode)429, """{"errcode":"M_LIMIT_EXCEEDED","retry_after_ms":2000}""")));
+
+        var exception = await Assert.ThrowsAsync<MatrixException>(() => client.WhoAmIAsync(Ct));
+
+        Assert.Equal(MatrixErrorCodes.LimitExceeded, exception.ErrorCode);
+        Assert.Equal(MatrixClientState.Active, client.State);
+    }
+
     [Fact]
     public async Task TransientRefreshFailure_ThrowsWithoutInvalidating()
     {
