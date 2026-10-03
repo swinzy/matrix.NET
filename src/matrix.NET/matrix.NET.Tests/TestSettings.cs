@@ -3,11 +3,19 @@ using Microsoft.Extensions.Configuration;
 namespace TeamBanana.MatrixDotNet.Tests;
 
 /// <summary>
-/// Settings for tests against a real homeserver, read from testsettings.json
-/// and then from MATRIX_TEST_* environment variables (which take precedence).
+/// Settings for integration tests, read from a JSON file and then from MATRIX_TEST_* environment
+/// variables, which take precedence. <c>MATRIX_TEST_TARGET</c> picks the file:
+/// <list type="bullet">
+/// <item><c>local</c> (default): testsettings.local.json, written by <c>tools/synapse/synapse.sh start</c>
+/// for a local Synapse without rate limits.</item>
+/// <item><c>remote</c>: testsettings.json, your own homeserver, whose rate limits apply.</item>
+/// </list>
 /// </summary>
 public class TestSettings
 {
+    public const string NotConfiguredMessage =
+        "No homeserver configured: run tools/synapse/synapse.sh start, or see testsettings.example.json";
+
     public string? Homeserver { get; set; }
     public string? User { get; set; }
     public string? Password { get; set; }
@@ -22,13 +30,36 @@ public class TestSettings
 
     public static TestSettings Load()
     {
+        // The local file is read where the script writes it, not copied to the output, so restarting
+        // Synapse with another version takes effect without a rebuild
+        var file = Environment.GetEnvironmentVariable("MATRIX_TEST_TARGET")?.ToLowerInvariant() switch
+        {
+            null or "" or "local" => FindUpwards("testsettings.local.json"),
+            "remote" => Path.Combine(AppContext.BaseDirectory, "testsettings.json"),
+            var target => throw new InvalidOperationException(
+                $"MATRIX_TEST_TARGET must be 'local' or 'remote', not '{target}'.")
+        };
+
         var settings = new TestSettings();
-        new ConfigurationBuilder()
-            .SetBasePath(AppContext.BaseDirectory)
-            .AddJsonFile("testsettings.json", optional: true)
+        var builder = new ConfigurationBuilder();
+        if (file is not null)
+            builder.AddJsonFile(file, optional: true);
+        builder
             .AddEnvironmentVariables("MATRIX_TEST_")
             .Build()
             .Bind(settings);
         return settings;
+    }
+
+    private static string? FindUpwards(string fileName)
+    {
+        for (var directory = new DirectoryInfo(AppContext.BaseDirectory); directory is not null; directory = directory.Parent)
+        {
+            var path = Path.Combine(directory.FullName, fileName);
+            if (File.Exists(path))
+                return path;
+        }
+
+        return null;
     }
 }

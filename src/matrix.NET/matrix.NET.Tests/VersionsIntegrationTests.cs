@@ -1,7 +1,7 @@
 namespace TeamBanana.MatrixDotNet.Tests;
 
 /// <summary>
-/// Runs against a real homeserver without logging in; skipped unless a homeserver is configured.
+/// Runs against a homeserver without logging in; skipped unless one is configured.
 /// </summary>
 public class VersionsIntegrationTests
 {
@@ -10,8 +10,7 @@ public class VersionsIntegrationTests
     [Fact]
     public async Task GetVersionsAsync_ReturnsModernVersions()
     {
-        Assert.SkipWhen(string.IsNullOrEmpty(_settings.Homeserver),
-            "Real homeserver not configured; see testsettings.example.json");
+        Assert.SkipWhen(string.IsNullOrEmpty(_settings.Homeserver), TestSettings.NotConfiguredMessage);
         var server = new MatrixServer(new Uri(_settings.Homeserver!));
 
         var response = await server.GetVersionsAsync(TestContext.Current.CancellationToken);

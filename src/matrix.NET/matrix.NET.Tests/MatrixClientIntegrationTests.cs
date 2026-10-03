@@ -28,14 +28,14 @@ public class MatrixClientIntegrationTests(LoggedInClientFixture fixture)
         Assert.Contains(response.Versions, version => version.StartsWith("v1."));
     }
 
-    // Explicit: needs its own login, which counts towards the account's rate limit. It uses a
-    // fresh device rather than the configured DeviceId, so logging out cannot end the shared
-    // session, and the device is deleted by the logout. Run with: dotnet test --explicit only
-    [Fact(Explicit = true)]
+    // Needs its own login, which counts towards the account's rate limit on a homeserver that has
+    // one. It uses a fresh device rather than the configured DeviceId, so logging out cannot end the
+    // shared session, and the device is deleted by the logout.
+    [Fact]
     public async Task LogoutAsync_EndsTheSessionOnTheHomeserver()
     {
         var settings = fixture.Settings;
-        Assert.SkipUnless(settings.IsConfigured, "Real homeserver not configured; see testsettings.example.json");
+        Assert.SkipUnless(settings.IsConfigured, TestSettings.NotConfiguredMessage);
         var session = await new MatrixServer(new Uri(settings.Homeserver!)).LoginAsync(new LoginRequest
         {
             Type = "m.login.password",

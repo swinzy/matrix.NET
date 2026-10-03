@@ -3,7 +3,7 @@ using System.Net;
 namespace TeamBanana.MatrixDotNet.Tests;
 
 /// <summary>
-/// Runs against a real homeserver; skipped unless <see cref="TestSettings"/> is configured.
+/// Runs against a homeserver; skipped unless <see cref="TestSettings"/> is configured.
 /// </summary>
 public class LoginIntegrationTests(LoggedInClientFixture fixture)
 {
@@ -11,8 +11,7 @@ public class LoginIntegrationTests(LoggedInClientFixture fixture)
 
     private MatrixServer CreateServer()
     {
-        Assert.SkipUnless(Settings.IsConfigured,
-            "Real homeserver not configured; see testsettings.example.json");
+        Assert.SkipUnless(Settings.IsConfigured, TestSettings.NotConfiguredMessage);
         return new MatrixServer(new Uri(Settings.Homeserver!));
     }
 
@@ -30,9 +29,8 @@ public class LoginIntegrationTests(LoggedInClientFixture fixture)
             Assert.Equal(Settings.DeviceId, session.DeviceId);
     }
 
-    // Explicit: a failed login counts towards the account's rate limit, and this behaviour is
-    // unlikely to change with our code. Run with: dotnet test --explicit only
-    [Fact(Explicit = true)]
+    // A failed login counts towards the account's rate limit on a homeserver that has one
+    [Fact]
     public async Task LoginAsync_WithWrongPassword_ThrowsForbidden()
     {
         var server = CreateServer();

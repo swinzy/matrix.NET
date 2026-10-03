@@ -26,6 +26,8 @@ src/matrix.NET/
 ├── global.json                 # Opts dotnet test into Microsoft.Testing.Platform
 ├── matrix.NET/                 # The library (namespace TeamBanana.MatrixDotNet)
 └── matrix.NET.Tests/           # xUnit v3 unit and integration tests
+tools/
+└── synapse/synapse.sh          # Local Synapse in podman for the integration tests
 ```
 
 `src/matrix.NET/ConsoleClient/` may exist locally as a scratch client. It is ignored by git
@@ -112,27 +114,49 @@ written twice. Adding `m.id.thirdparty` or `m.id.phone` means adding a class and
 
 - **Unit tests** use `StubHttpMessageHandler`, which returns a canned response and records
   the request. They need no network.
-- **Integration tests** run against a real homeserver configured in
-  `matrix.NET.Tests/testsettings.json` (git-ignored; see `testsettings.example.json`) or
-  `MATRIX_TEST_*` environment variables. They are skipped when not configured.
-  Use your own homeserver, ideally one dedicated to testing, with a test account. Logins
-  are rate limited per account, so repeated runs against a shared server can lock the
-  account out of logging in for a while.
-- **A run logs in at most once.** `LoggedInClientFixture` is an xUnit assembly fixture that
-  logs in lazily, on the first test asking for a client. Every integration test that needs a
-  session shares it, which keeps the run within the homeserver's login rate limit. Runs
-  without such tests never log in. A failed login is cached, so it is not retried by every
-  test.
-- **Tests with notable side effects are explicit** (`[Fact(Explicit = true)]`) and excluded
-  from `dotnet test`. They qualify if their behaviour is unlikely to change with our code,
-  e.g. the wrong-password login, which counts towards the account's rate limit.
+- **Integration tests run against a local Synapse by default.** `tools/synapse/synapse.sh`
+  runs one in podman with every rate limit turned off, registers a test user and writes
+  `matrix.NET.Tests/testsettings.local.json` (git-ignored). Without that file, and without
+  `MATRIX_TEST_*` environment variables, integration tests are skipped.
+  - `tools/synapse/synapse.sh start` starts the latest Synapse on `http://127.0.0.1:8008/`.
+  - `tools/synapse/synapse.sh start v1.98.0` starts an older release instead, e.g. to match
+    a homeserver that has not been upgraded. Each version keeps its own data in
+    `.synapse/<version>/`, since Synapse cannot migrate a database back to an older version.
+  - `stop`, `status` and `reset [version]` stop it, show what runs, or start that version
+    from empty data.
+  - The tests read `testsettings.local.json` where the script writes it, so switching
+    versions needs no rebuild.
+- **Your own homeserver is the remote target,** selected with `MATRIX_TEST_TARGET=remote`.
+  It is configured in `matrix.NET.Tests/testsettings.json` (git-ignored; see
+  `testsettings.example.json`), and its rate limits apply, so run it on demand rather than
+  routinely. A full run sends three login requests: the shared login, the logout test's own
+  login, and the wrong-password test. Check them against the homeserver's `rc_login` limits
+  first. In Synapse (`synapse/rest/client/login.py`), with its defaults:
+  - `address`: every login request from the IP address counts, failed ones included, so 3
+    per run. A burst of 5, then one more about every 5.5 minutes.
+  - `account`: only successful logins count, so 2 per run. Same burst and refill.
+  - `failed_attempts`: 1 per run. A burst of 3, then one more about every 6 seconds.
+
+  The `address` limit binds first. From a full allowance, a first run leaves 2 of 5, so a
+  second run needs to wait about 5.5 minutes for the third. After that, each run needs
+  about 17 minutes to earn its 3 back. Logins by other clients of the same account or IP
+  address use the same allowance.
+- **A run logs in once for all tests that share a session.** `LoggedInClientFixture` is an
+  xUnit assembly fixture that logs in lazily, on the first test asking for a client. A failed
+  login is cached, so it is not retried by every test. Tests that test login or logout
+  themselves log in separately.
+- **Explicit tests** (`[Fact(Explicit = true)]`) are excluded from `dotnet test`. A test is
+  explicit only if it affects the machine running it, e.g. by downloading something large,
+  or if it costs too much to be worth running every time. Side effects on the test
+  homeserver are not a reason, as the default target is the local, disposable one.
   - Run only them: `dotnet test --explicit only`.
   - Run everything: `dotnet test --explicit on`.
-- The optional `DeviceId` setting makes the test login reuse one device instead of creating
-  a new one per run.
+- The optional `DeviceId` setting makes the shared login reuse one device instead of
+  creating a new one per run.
 - **`SpecConformanceTests.Endpoints_MatchTheSpec`** compares every declared endpoint with the
-  spec's OpenAPI definition (D26). It downloads the definition, so it is explicit. Run it after
-  adding endpoints and before releases. When the spec baseline changes, update its URL too.
+  spec's OpenAPI definition (D26). It downloads the 2.5 MB definition, so it is explicit. Run
+  it after adding endpoints and before releases. When the spec baseline changes, update its
+  URL too.
 
 ## 3. Design decisions
 
@@ -1303,11 +1327,12 @@ Entries so far:
 - **.NET 10 SDK and xUnit v3.** `dotnet test` refuses to run xUnit v3 through VSTest on the
   .NET 10 SDK. `src/matrix.NET/global.json` opts into Microsoft.Testing.Platform. Filters
   use MTP syntax, e.g. `dotnet test --filter-class <FullClassName>`.
-- **Integration tests touch a real account.**
+- **Integration tests against the remote target touch a real account.**
   - Without `DeviceId`, each successful login creates a new device.
   - Logins are rate limited per account. Logging in once per test was enough to hit
-    `M_LIMIT_EXCEEDED` after a few runs, so tests share one login.
-  - The wrong-password test counts as a failed login, so it is explicit.
+    `M_LIMIT_EXCEEDED` after a few runs, so tests share one login, and the remote target is
+    run on demand only (see Tests).
+  - The wrong-password test counts as a failed login.
   - Reusing a device ID may invalidate that device's earlier tokens.
 - **Login type depends on the homeserver.** Homeservers that only support OAuth 2.0 answer
   `GET /login` with 404 `M_UNRECOGNIZED`, and password login is impossible there.

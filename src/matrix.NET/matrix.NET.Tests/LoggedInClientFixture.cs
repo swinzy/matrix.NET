@@ -24,7 +24,7 @@ public sealed class LoggedInClientFixture
     /// <summary>Returns the shared client, skipping the calling test if no homeserver is configured.</summary>
     public Task<MatrixClient> GetClientAsync()
     {
-        Assert.SkipUnless(Settings.IsConfigured, "Real homeserver not configured; see testsettings.example.json");
+        Assert.SkipUnless(Settings.IsConfigured, TestSettings.NotConfiguredMessage);
         return _client.Value;
     }
 
