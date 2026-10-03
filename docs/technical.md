@@ -39,8 +39,9 @@ and is not part of the repository.
 |---|---|
 | `MatrixServer` | Unauthenticated endpoints of a homeserver: supported login types, login and the shared endpoints |
 | `ServerOptions` | Options for `MatrixServer`: automatic decompression (D25) |
-| `MatrixClient` | Authenticated endpoints through a `MatrixSession`: `WhoAmIAsync`, `LogoutAsync` and the shared endpoints so far; lifecycle `State` and `SessionChanged` (D14, D21) |
-| `ClientOptions` | Options for `MatrixClient`: automatic token refresh, automatic decompression |
+| `MatrixClient` | Authenticated endpoints through a `MatrixSession`: `WhoAmIAsync`, `LogoutAsync` and the shared endpoints so far; lifecycle `State` and `SessionChanged` (D14, D21); automatic token refresh (D12) |
+| `ClientOptions` | Options for `MatrixClient`: automatic token refresh, refresh handler, automatic decompression |
+| `ISessionRefreshHandler` / `DiscardingSessionRefreshHandler` | Saves refreshed sessions before their tokens are used; the discarding one saves nothing (D23) |
 | `WhoAmIResponse` | Response of `GET /account/whoami` |
 | `LoginRequest` | Body of `POST /login` |
 | `MatrixSession` | A logged-in session: homeserver, user and device IDs, tokens, expiry (D11) |
@@ -251,7 +252,8 @@ var server = new MatrixServer(new Uri("https://matrix.example.org/"));
 MatrixSession session = await server.LoginAsync(request);
 
 // Authenticated; owns the session lifecycle. Same constructor for login and restore.
-var client = new MatrixClient(session);
+// The handler saves sessions the library refreshes (D23).
+var client = new MatrixClient(session, new ClientOptions { SessionRefreshHandler = myHandler });
 ```
 
 #### D6. `MatrixServer` returns a `MatrixSession` (Decided)
@@ -297,8 +299,8 @@ Rules for the constructor:
   thread-safe. A failure is thrown from the call that triggered it, and the next call tries
   again.
 - **The access token is not validated on creation.** The first real request reveals whether
-  it is still valid: a rejected token throws `MatrixUnknownTokenException` and raises the
-  session-invalidated notification (D14). Apps that want an early check can call `whoami`
+  it is still valid: a rejected token is refreshed if possible (D12). Otherwise it throws
+  `MatrixUnknownTokenException` and raises the session-invalidated notification (D14). Apps that want an early check can call `whoami`
   themselves.
 - **Heavy start-up work belongs to an explicit start step.** For example, the future sync loop
   will be started with its own method, as matrix-js-sdk separates `createClient()` from
@@ -515,6 +517,17 @@ Rules:
   throws that error without invalidating the session. Only a definite rejection means
   "logged out".
 - The homeserver's own `error` text is kept alongside the library's message.
+- The failed request is retried once. If the refreshed token is rejected as well, the
+  session is invalidated with the refresh-failure message instead of being refreshed again.
+- When the refresh itself is rejected, the exception and the notification carry that
+  response's `soft_logout`, since it describes the session's final state.
+- A refresh answered with `M_USER_LOCKED` locks the client like any other request (D22).
+- If the response has no new refresh token, the old one is kept, as the spec allows.
+- One lock serialises refreshes. A request rejected for a token that another request has
+  already replaced is retried with the new token without refreshing again. Each caller's
+  cancellation token applies to its own wait. Cancelling the caller that is refreshing
+  abandons that refresh, and the next waiting caller refreshes instead.
+- `LogoutAsync` never refreshes: an unknown token already counts as logged out (D21).
 - After a successful refresh, the new session is saved through `ISessionRefreshHandler` (D23)
   **before** the new tokens are used. Only then does the tokens-refreshed notification
   (D14) fire and the failed request get retried. Every `MatrixUnknownTokenException`
@@ -556,8 +569,9 @@ Subclasses so far:
 `MatrixClient` raises one event, `SessionChanged`, whose `SessionChangedEventArgs.Kind`
 (`SessionChangeKind`) tells the cases apart:
 
-- **Tokens refreshed:** the app saves the new session. This will come with automatic
-  refresh.
+- **Tokens refreshed** (`TokensRefreshed`): the library refreshed the access token. It is
+  raised after `ISessionRefreshHandler` has saved the new session (D23) and before the
+  failed request is retried. It is for observers only, such as a debug view.
 - **Logged out** (`LoggedOut`): the app called `LogoutAsync`. It is raised even though the
   app initiated it, because several components may care about a session ending, e.g. an
   account list or a notification service. It is a separate kind from invalidation, so a
@@ -573,7 +587,8 @@ introduced later if a case needs data of its own.
 Rules:
 
 - **Raised once per change of `State`.** For example, ten requests failing while locked
-  raise `Locked` once.
+  raise `Locked` once. A refresh does not change `State`; it raises `TokensRefreshed` once
+  per refresh, even when several requests were waiting for it.
 - **Raised after the state has changed** and before the triggering call returns or throws,
   so handlers see the new `State`.
 - **Raised synchronously on the thread that completed the request,** typically a thread pool
@@ -742,7 +757,8 @@ that needs releasing:
 
 - the `HttpClient` is shared or caller-owned (D10);
 - the session is plain data;
-- the future refresh lock needs no disposal in practice.
+- the refresh lock is a `SemaphoreSlim` whose wait handle is never created, so it needs no
+  disposal.
 
 **After `LogoutAsync`, or after the session is invalidated, the client is unusable.** The
 session counts as invalidated only when the homeserver answers `M_UNKNOWN_TOKEN` and the
@@ -1130,10 +1146,6 @@ The library uses only stable features. Unstable, MSC-prefixed paths are never us
 
 ### Current limitations
 
-- Automatic token refresh (D12, D23) is not implemented:
-  - there is no refresh handler yet, and no tokens-refreshed notification;
-  - the transport sends each request once. There is no refresh-and-retry on
-    `M_UNKNOWN_TOKEN`.
 - The homeserver compatibility design (§3.3) is not implemented: `/versions` is not cached,
   there is no cache lifetime option, no minimum version check and no feature detection.
 - Only `m.id.user` identifiers are supported.
@@ -1148,10 +1160,9 @@ The library uses only stable features. Unstable, MSC-prefixed paths are never us
 
 The feature roadmap lives in [TODO.md](../TODO.md). Near-term technical work:
 
-1. Automatic token refresh (D12, D23), including the refresh handler.
-2. Homeserver compatibility (D24 to D26): the `/versions` cache and its lifetime option,
+1. Homeserver compatibility (D24 to D26): the `/versions` cache and its lifetime option,
    the minimum version check and the feature table.
-3. Server discovery through `.well-known/matrix/client`.
+2. Server discovery through `.well-known/matrix/client`.
 
 Later considerations, not designed yet:
 

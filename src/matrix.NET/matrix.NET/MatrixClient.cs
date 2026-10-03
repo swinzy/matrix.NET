@@ -8,8 +8,9 @@ namespace TeamBanana.MatrixDotNet;
 /// </summary>
 /// <remarks>
 /// Creating a client performs no I/O and does not validate the access token; the first request
-/// reveals whether the session is still valid. After <see cref="LogoutAsync"/>, or once the
-/// homeserver rejects the token for good, the client is unusable (see <see cref="State"/>) and
+/// reveals whether the session is still valid. A rejected access token is refreshed automatically
+/// when the session has a refresh token (see <see cref="ClientOptions.AutoRefreshToken"/>). After
+/// <see cref="LogoutAsync"/>, or once the homeserver rejects the token for good, the client is unusable (see <see cref="State"/>) and
 /// every call throws <see cref="InvalidOperationException"/>. The client holds nothing that
 /// needs disposing.
 /// </remarks>
@@ -19,15 +20,24 @@ public class MatrixClient : ISharedEndpoints
     private readonly SharedEndpoints _shared;
 
     // Replaced as a whole when the session changes, e.g. after a token refresh
-    private MatrixSession _session;
+    private volatile MatrixSession _session;
     private volatile MatrixClientState _state = MatrixClientState.Active;
     private readonly Lock _stateLock = new();
+
+    // Lets requests rejected for the same token share one refresh
+    private readonly SemaphoreSlim _refreshLock = new(1, 1);
+
+    private const string RefreshFailedMessage = "The access token expired and could not be refreshed. Log in again.";
 
     /// <summary>
     /// Creates a client using the library's shared <see cref="HttpClient"/>.
     /// </summary>
     /// <param name="session">The session to use.</param>
     /// <param name="options">Client options; defaults apply when omitted.</param>
+    /// <exception cref="ArgumentException">
+    /// Automatic token refresh is on and the session has a refresh token, but
+    /// <see cref="ClientOptions.SessionRefreshHandler"/> is not set.
+    /// </exception>
     public MatrixClient(MatrixSession session, ClientOptions? options = null)
         : this(session, options, httpClientSource: null)
     {
@@ -39,6 +49,10 @@ public class MatrixClient : ISharedEndpoints
     /// <param name="session">The session to use.</param>
     /// <param name="httpClient">A long-lived client, owned and disposed by the caller.</param>
     /// <param name="options">Client options; defaults apply when omitted.</param>
+    /// <exception cref="ArgumentException">
+    /// Automatic token refresh is on and the session has a refresh token, but
+    /// <see cref="ClientOptions.SessionRefreshHandler"/> is not set.
+    /// </exception>
     public MatrixClient(MatrixSession session, HttpClient httpClient, ClientOptions? options = null)
         : this(session, options, httpClientSource: () => httpClient)
     {
@@ -56,6 +70,10 @@ public class MatrixClient : ISharedEndpoints
     /// then open new connections, which is slow and can exhaust sockets under load.
     /// </param>
     /// <param name="options">Client options; defaults apply when omitted.</param>
+    /// <exception cref="ArgumentException">
+    /// Automatic token refresh is on and the session has a refresh token, but
+    /// <see cref="ClientOptions.SessionRefreshHandler"/> is not set.
+    /// </exception>
     public MatrixClient(MatrixSession session, Func<HttpClient> httpClientSource, ClientOptions? options = null)
         : this(session, options, (Func<HttpClient>?)httpClientSource)
     {
@@ -67,6 +85,13 @@ public class MatrixClient : ISharedEndpoints
 
         _session = session;
         Options = options ?? new ClientOptions();
+
+        // Refreshed tokens that are used before being saved are lost for good (D23)
+        if (Options.AutoRefreshToken && session.RefreshToken is not null && Options.SessionRefreshHandler is null)
+            throw new ArgumentException(
+                "Automatic token refresh is on and the session has a refresh token, but no " +
+                "ClientOptions.SessionRefreshHandler is set to save refreshed sessions. Set one, or set " +
+                "ClientOptions.AutoRefreshToken to false to manage refresh in the app.", nameof(options));
 
         var automaticDecompression = Options.AutomaticDecompression;
         _transport = new MatrixTransport(session.Homeserver,
@@ -157,7 +182,7 @@ public class MatrixClient : ISharedEndpoints
         TryChangeState(MatrixClientState.LoggedOut, new SessionChangedEventArgs(SessionChangeKind.LoggedOut));
     }
 
-    // Every endpoint goes through here, so state checks, token rejection and locking apply uniformly
+    // Every endpoint goes through here, so state checks, token refresh and locking apply uniformly
     private async Task<T> InvokeAsync<T>(Func<CancellationToken, Task<T>> call, AuthRequirement auth,
         CancellationToken cancellationToken)
     {
@@ -165,11 +190,7 @@ public class MatrixClient : ISharedEndpoints
         T result;
         try
         {
-            result = await call(cancellationToken);
-        }
-        catch (MatrixUnknownTokenException e)
-        {
-            throw OnTokenRejected(e);
+            result = await SendWithRefreshAsync(call, cancellationToken);
         }
         catch (MatrixUserLockedException)
         {
@@ -187,21 +208,104 @@ public class MatrixClient : ISharedEndpoints
         return result;
     }
 
-    private Exception OnTokenRejected(MatrixUnknownTokenException rejection)
+    // Retries once after a refresh; a freshly refreshed token that is rejected again is not refreshed again
+    private async Task<T> SendWithRefreshAsync<T>(Func<CancellationToken, Task<T>> call,
+        CancellationToken cancellationToken)
     {
-        var hasRefreshToken = _session.RefreshToken is not null;
+        // A refresh finishing between reading the token and sending makes this stale. The rejection is
+        // then attributed to the old token, which is harmless unless the new one is rejected too.
+        var accessToken = _session.AccessToken;
+        try
+        {
+            return await call(cancellationToken);
+        }
+        catch (MatrixUnknownTokenException e)
+        {
+            await RefreshAsync(accessToken, e, cancellationToken);
+        }
 
-        // Placeholder until automatic refresh is implemented
-        if (Options.AutoRefreshToken && hasRefreshToken)
-            return new NotImplementedException(
-                "Automatic token refresh is not implemented yet. Set ClientOptions.AutoRefreshToken to false to disable it.",
-                rejection);
+        try
+        {
+            return await call(cancellationToken);
+        }
+        catch (MatrixUnknownTokenException e)
+        {
+            throw Invalidate(e, RefreshFailedMessage);
+        }
+    }
 
+    /// <summary>
+    /// Refreshes the session after the homeserver rejected <paramref name="rejectedAccessToken"/>, or
+    /// throws what the caller should see if that is impossible.
+    /// </summary>
+    private async Task RefreshAsync(string rejectedAccessToken, MatrixUnknownTokenException rejection,
+        CancellationToken cancellationToken)
+    {
+        if (_session.RefreshToken is null)
+            throw Invalidate(rejection,
+                "The access token is no longer valid and the session has no refresh token. Log in again.");
+        if (!Options.AutoRefreshToken)
+            throw Invalidate(rejection,
+                "The access token is no longer valid and automatic token refresh is disabled. Refresh the session manually or log in again.");
+
+        await _refreshLock.WaitAsync(cancellationToken);
+        try
+        {
+            // Another request may have refreshed, or failed to, while this one waited
+            if (_state == MatrixClientState.Invalidated)
+                throw Invalidate(rejection, RefreshFailedMessage);
+            EnsureUsable();
+            if (_session.AccessToken != rejectedAccessToken)
+                return;
+
+            var refreshed = await RequestRefreshAsync(_session, cancellationToken);
+            // The homeserver revokes the old refresh token once the new tokens are used, so they must
+            // be saved first. If saving throws, they are never used and the old refresh token stays valid
+            await Options.SessionRefreshHandler!.OnSessionRefreshedAsync(refreshed, cancellationToken);
+            _session = refreshed;
+        }
+        finally
+        {
+            _refreshLock.Release();
+        }
+
+        if (_state is not (MatrixClientState.LoggedOut or MatrixClientState.Invalidated))
+            RaiseSessionChanged(new SessionChangedEventArgs(SessionChangeKind.TokensRefreshed));
+    }
+
+    private async Task<MatrixSession> RequestRefreshAsync(MatrixSession session, CancellationToken cancellationToken)
+    {
+        RefreshResponse response;
+        try
+        {
+            response = await _transport.SendAsync<RefreshRequest, RefreshResponse>(HttpMethod.Post,
+                "_matrix/client/v3/refresh", new RefreshRequest(session.RefreshToken!), AuthRequirement.None,
+                cancellationToken);
+        }
+        catch (MatrixUnknownTokenException e)
+        {
+            // The refresh token is unknown or already used. Unlike a network error, this is final
+            throw Invalidate(e, RefreshFailedMessage);
+        }
+
+        return session with
+        {
+            AccessToken = response.AccessToken,
+            // Without a new refresh token, the old one stays usable
+            RefreshToken = response.RefreshToken ?? session.RefreshToken,
+            // The spec gives a relative lifetime, which is meaningless once persisted (D11)
+            ExpiresAt = response.ExpiresInMs is { } lifetime ? DateTimeOffset.UtcNow.AddMilliseconds(lifetime) : null
+        };
+    }
+
+    /// <summary>
+    /// Ends the session after a final token rejection and returns the exception to throw, carrying
+    /// <paramref name="message"/> followed by the homeserver's own text.
+    /// </summary>
+    private MatrixUnknownTokenException Invalidate(MatrixUnknownTokenException rejection, string message)
+    {
         TryChangeState(MatrixClientState.Invalidated,
             new SessionChangedEventArgs(SessionChangeKind.Invalidated, rejection.SoftLogout));
-        var message = hasRefreshToken
-            ? "The access token is no longer valid and automatic token refresh is disabled. Refresh the session manually or log in again."
-            : "The access token is no longer valid and the session has no refresh token. Log in again.";
         if (rejection.ServerMessage is not null)
             message += $" Homeserver: {rejection.ServerMessage}";
 
@@ -262,4 +366,13 @@ public class MatrixClient : ISharedEndpoints
     }
 
     private record EmptyResponse;
+
+    private record RefreshRequest(string RefreshToken);
+
+    private class RefreshResponse
+    {
+        public required string AccessToken { get; init; }
+        public string? RefreshToken { get; init; }
+        public long? ExpiresInMs { get; init; }
+    }
 }

@@ -21,7 +21,13 @@ public enum SessionChangeKind
     Locked,
 
     /// <summary>The account is no longer locked; restore the normal UI.</summary>
-    Unlocked
+    Unlocked,
+
+    /// <summary>
+    /// The library refreshed the access token. <see cref="MatrixClient.Session"/> holds the new
+    /// session, which <see cref="ClientOptions.SessionRefreshHandler"/> has already saved.
+    /// </summary>
+    TokensRefreshed
 }
 
 /// <summary>

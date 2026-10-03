@@ -25,7 +25,7 @@ adds the rest of what it requires of Web, Desktop and Mobile clients.
 - [x] Authenticated requests (`Authorization: Bearer` access token)
 - [x] Current account information (`GET /account/whoami`)
 - [x] Logout (`POST /logout`)
-- [ ] Refreshing access tokens (`POST /refresh`), automatic by default
+- [x] Refreshing access tokens (`POST /refresh`), automatic by default
 - [ ] Transaction identifiers for idempotent sends
 - [ ] Sync: initial and incremental (`GET /sync` with `since` and `timeout`)
 - [ ] List joined rooms (`GET /joined_rooms`)

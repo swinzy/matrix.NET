@@ -116,18 +116,6 @@ public class MatrixClientLifecycleTests
         Assert.StartsWith("The access token is no longer valid and the session has no refresh token.", exception.Message);
     }
 
-    // Placeholder behaviour until automatic refresh is implemented; the session is not invalidated
-    [Fact]
-    public async Task RejectedToken_WithAutoRefresh_ThrowsNotImplementedForNow()
-    {
-        var client = CreateClient(new StubHttpMessageHandler(HttpStatusCode.Unauthorized, RejectedToken),
-            RefreshableSession);
-
-        await Assert.ThrowsAsync<NotImplementedException>(() => client.WhoAmIAsync(Ct));
-
-        Assert.Equal(MatrixClientState.Active, client.State);
-    }
-
     [Fact]
     public async Task RejectedToken_OnSharedEndpoint_AlsoInvalidates()
     {
