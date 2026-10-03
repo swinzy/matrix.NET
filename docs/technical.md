@@ -1098,33 +1098,83 @@ new MatrixServer(uri, () => httpClient, new ServerOptions { ... });
 - **The app decides when to pay the cost.** Letting apps refresh on their own schedule
   means they can keep every endpoint call equally fast.
 
-#### D26. Feature detection by version ranges, only where the library must choose (Decided)
+#### D26. Feature detection by version ranges; the library knows when each feature was added (Decided)
 
 Differences between homeserver versions fall into three kinds:
 
 | Kind | Example | Handling |
 |---|---|---|
-| Endpoint missing on older servers | Room summaries (v1.15) | Send the request. The homeserver answers 404 or 405 `M_UNRECOGNIZED`, which reaches the caller unchanged as `MatrixException.ErrorCode`. No generic fallback. |
+| Endpoint missing on older servers | Room summaries (v1.15) | Send the request; never refuse it up front. The endpoint declares the version that added it, so a failure gets a clear error and apps can ask in advance (below). No generic fallback. |
 | Library must choose between alternatives | Authenticated media (v1.11) vs legacy media; `via` vs `server_name` on `/join` | Detect up front from `/versions` |
 | Fields added or removed in responses | New `/sync` fields in v1.16 | Nothing extra: optional fields are nullable, and unknown fields are ignored |
 
-For the second kind, a small declarative table lists each such feature. Each entry records
-the version that added it, the version that removed it if any, and its MSC's `.stable`
-flag.
+**One feature table covers the first two kinds.** Each entry records the version that added
+it, the version that removed it if any, and its MSC's `.stable` flag if there is one.
+
+- Every endpoint added after v1.1 gets an entry when it is implemented. The spec marks each
+  with `added-in`, so recording it costs nothing extra at that point. Endpoints from v1.1 or
+  earlier need no entry, as v1.1 is the minimum (D24).
+- Every choice between alternatives, the second kind, gets an entry.
 
 **The comparison rule:** a feature is supported if any advertised version satisfies
 `added ≤ version < removed`, or if the `.stable` flag is `true` in `unstable_features`.
 Versions are parsed into comparable numbers, `r0.x` counts as v1.0 as in ruma, and
 unparseable entries are ignored.
 
+**Clear errors for missing endpoints.** When an endpoint with an entry is answered with 404 or
+405 `M_UNRECOGNIZED`, the library explains the likely cause:
+
+- The exception stays a `MatrixException` with the same `ErrorCode` and `ServerMessage`, so
+  existing handling keeps working. Only the message gains the explanation, e.g.
+  `GET /rooms/{roomId}/summary requires Matrix v1.15 or later, but the homeserver advertises
+  up to v1.12.`
+- The explanation uses only the cached `/versions` (D25). The error path never fetches it,
+  so a failure causes no extra request. Depending on the cache:
+  - **cached, feature not advertised:** the message names the required and the advertised
+    versions, as above;
+  - **cached, feature advertised:** the message says so and points elsewhere, e.g. a reverse
+    proxy that does not forward the path, since the homeserver claims support;
+  - **nothing cached:** the message names the required version and says the homeserver may
+    not support it.
+- The wording says "likely", never "certainly": a 404 can also come from a proxy.
+- A dedicated subclass carrying the required version can be added when an app needs the data
+  rather than the text (D13).
+
+**Asking in advance.** `MatrixServer` and `MatrixClient` both offer `SupportsAsync(feature)`
+(D19), so an app can hide or disable a feature before the user tries it.
+
+- It applies the comparison rule to the instance's own cache. A `MatrixClient` may see more
+  than a `MatrixServer`, as homeservers may advertise some features only to logged-in users.
+- It fetches `/versions` if the cache is empty or expired, as any other call needing the
+  versions does (D25).
+- `true` means the homeserver advertises the feature. `false` means it does not, which is not
+  proof the endpoint is missing: a server can ship one before advertising it. Apps that must
+  be certain call the endpoint and handle the error.
+- Feature identifiers are public, one per table entry. Their exact form is settled with the
+  first implementation.
+
 The library uses only stable features. Unstable, MSC-prefixed paths are never used, but
 `unstable_features` is exposed to apps unchanged.
 
 **Why:**
 
-- **Only the second kind needs detection.** The other two already work, so the table stays
-  small. ruma declares a version history for every endpoint instead. That is thorough, but
-  ruma generates it from code, and maintaining it by hand here would cost too much.
+- **The library knows the spec; the app decides.** Which version added an endpoint is spec
+  knowledge. Without the table, every app that wants to hide an unsupported feature would
+  have to look it up in the spec and maintain its own copy. What to do about a missing
+  feature, such as hiding a button or offering another way, stays with the app.
+- **The table records only what is needed.** ruma declares a full version history for every
+  endpoint, generated from code; maintaining that by hand here would cost too much. One
+  "added" version, and a "removed" version where there is one, for the endpoints added after
+  the minimum, is small and is written once, when the endpoint is.
+- **No refusal up front.** A server may implement an endpoint before advertising the version
+  that contains it, so refusing based on versions would block features that work. The
+  homeserver's own answer is the only certain one.
+- **Raw `M_UNRECOGNIZED` is not a clear error.** On its own, a 404 cannot tell an old server
+  from a misconfigured proxy or a library bug. The roadmap asks for clear errors for features
+  the homeserver does not support.
+- **No extra request on the error path.** Fetching `/versions` while handling a failure would
+  add hidden I/O and latency to an already failing call (D20). The cache is usually filled by
+  then anyway.
 - **Version ranges rather than exact matches.**
   - matrix-js-sdk and mautrix-python check whether a version string is present. That misses
     a server advertising only `v1.12` for a v1.11 feature, and says nothing about removals.
@@ -1136,8 +1186,7 @@ The library uses only stable features. Unstable, MSC-prefixed paths are never us
   the spec version that contains it.
 - **No generic fallback for missing endpoints.** None of the SDKs researched has one, and
   matrix-js-sdk's per-call-site fallbacks carry Synapse-specific workarounds and expiry
-  notes. A subclass for "not supported" can come later if it needs to carry data such as
-  the required version (D13).
+  notes.
 
 #### D27. Deviations from the spec are tolerated in one place, by name (Decided)
 
@@ -1207,7 +1256,8 @@ Entries so far:
 ### Current limitations
 
 - The homeserver compatibility design (§3.3) is not implemented: `/versions` is not cached,
-  there is no cache lifetime option, no minimum version check and no feature detection.
+  there is no cache lifetime option, no minimum version check, no feature table, no
+  `SupportsAsync` and no explanation of missing endpoints.
 - Only `m.id.user` identifiers are supported.
 - XML documentation is generated and shipped, so IDEs show it. Warning CS1591, for missing
   documentation, is silenced until all public members are documented.
@@ -1221,7 +1271,8 @@ Entries so far:
 The feature roadmap lives in [TODO.md](../TODO.md). Near-term technical work:
 
 1. Homeserver compatibility (D24 to D26): the `/versions` cache and its lifetime option,
-   the minimum version check and the feature table.
+   the minimum version check, the feature table, `SupportsAsync` and clear errors for
+   missing endpoints.
 2. Server discovery through `.well-known/matrix/client`.
 
 Later considerations, not designed yet:
