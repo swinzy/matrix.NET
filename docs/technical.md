@@ -60,6 +60,9 @@ and is not part of the repository.
 | `Transport.ISharedEndpoints` (internal) | Endpoints usable with or without a session, implemented by both public types (D19) |
 | `Transport.SharedEndpoints` (internal) | The single implementation of those endpoints |
 | `Compatibility.HomeserverQuirks` (internal) | Every tolerated deviation of a homeserver from the spec (D27) |
+| `MatrixVersion` | A comparable spec version; `Minimum` is v1.1 (D24) |
+| `MatrixFeature` | The features added after the minimum version, with the versions that added and removed them (D26) |
+| `Transport.Endpoint` / `Transport.Endpoints` (internal) | One declaration per endpoint: method, path, authentication and feature; the transport sends only these (D26) |
 
 ### Request pipeline
 
@@ -127,6 +130,9 @@ written twice. Adding `m.id.thirdparty` or `m.id.phone` means adding a class and
   - Run everything: `dotnet test --explicit on`.
 - The optional `DeviceId` setting makes the test login reuse one device instead of creating
   a new one per run.
+- **`SpecConformanceTests.Endpoints_MatchTheSpec`** compares every declared endpoint with the
+  spec's OpenAPI definition (D26). It downloads the definition, so it is explicit. Run it after
+  adding endpoints and before releases. When the spec baseline changes, update its URL too.
 
 ## 3. Design decisions
 
@@ -1150,14 +1156,67 @@ unparseable entries are ignored.
 - `true` means the homeserver advertises the feature. `false` means it does not, which is not
   proof the endpoint is missing: a server can ship one before advertising it. Apps that must
   be certain call the endpoint and handle the error.
-- Feature identifiers are public, one per table entry. Their exact form is settled with the
-  first implementation.
+- Feature identifiers are the static members of `MatrixFeature` (below).
 
 The library uses only stable features. Unstable, MSC-prefixed paths are never used, but
 `unstable_features` is exposed to apps unchanged.
 
+**How features and endpoints are declared.** The table must stay correct as endpoints are
+added, so each endpoint is declared exactly once and checked against the spec automatically.
+
+- **`MatrixFeature`** is a sealed class whose static members are the table, used like
+  `HttpMethod.Get`:
+
+  ```csharp
+  public static readonly MatrixFeature TokenRefresh = new("Token refresh (POST /refresh)", new MatrixVersion(1, 3));
+  ```
+
+  Each member carries `Name`, `AddedIn`, `RemovedIn` and `UnstableFeatureFlag`, so apps can
+  read the data, e.g. to show "requires v1.15". The constructor is private, so the set of
+  features is exactly the library's table. `MatrixVersion` is a comparable
+  `(Major, Minor)` value; `MatrixVersion.Minimum` is v1.1 (D24).
+- **Every endpoint is an internal `Endpoint`** in `Transport.Endpoints`, holding its method,
+  path, `AuthRequirement` and feature. The transport sends only `Endpoint`s, so there is no
+  other way to call one. Paths use the spec's parameter names, e.g. `{roomId}`.
+- **Every declaration states whether it needs a feature.** `Endpoint` has no public
+  constructor, only two factories:
+
+  ```csharp
+  Endpoint.Baseline(HttpMethod.Get, "_matrix/client/v3/account/whoami", AuthRequirement.Required);
+  Endpoint.Since(MatrixFeature.TokenRefresh, HttpMethod.Post, "_matrix/client/v3/refresh", AuthRequirement.None);
+  ```
+
+  A declaration cannot leave the question out, and a reviewer sees the answer in the line.
+- **An explicit test checks every declaration against the spec.** `SpecConformanceTests`
+  downloads the spec's merged OpenAPI definition for the baseline version
+  (`https://spec.matrix.org/v1.19/client-server-api/api.json`) and, for each field of
+  `Endpoints`, reports:
+  - an endpoint the spec does not have, e.g. a wrong path or a removed endpoint;
+  - a `Baseline` endpoint the spec marks with `x-addedInMatrixVersion` above the minimum,
+    i.e. a missing feature;
+  - a feature whose `AddedIn` differs from the spec;
+  - an `AuthRequirement` that differs from the operation's `security`: none means `None`, an
+    empty alternative means `Optional`, a user access token otherwise means `Required`.
+
+  It needs the network, so it is explicit, like the other tests with side effects. A
+  non-explicit test checks that no endpoint is declared twice.
+- Adding an endpoint therefore costs one `Endpoint` line, plus one `MatrixFeature` line if it
+  was added after the minimum. Forgetting the second is caught by the test.
+
 **Why:**
 
+- **Static members rather than an enum:** an enum would need a separate table mapping each
+  value to its versions. Two lists that must agree are what goes wrong as endpoints multiply.
+  A member is its own table entry, carries its data, and adding one is not a breaking change.
+- **Not a capabilities object with a property per feature:** each feature would need a
+  property and its own logic, and it could only answer yes or no.
+- **Not attributes on endpoint methods:** they would be queried by method name through
+  reflection, which is fragile and unfriendly to trimming and AOT. They also cannot describe
+  the second kind, such as `via` on `/join`, which is not a method.
+- **No interface or inheritance to enforce declarations.** An interface such as
+  `IVersionedEndpoint` would only force a member to exist, which the factories already do at
+  compile time. One class per endpoint, as in ruma, would be far heavier. Neither checks that
+  the value is right; only comparing with the spec does.
 - **The library knows the spec; the app decides.** Which version added an endpoint is spec
   knowledge. Without the table, every app that wants to hide an unsupported feature would
   have to look it up in the spec and maintain its own copy. What to do about a missing
@@ -1255,8 +1314,9 @@ Entries so far:
 
 ### Current limitations
 
-- The homeserver compatibility design (§3.3) is not implemented: `/versions` is not cached,
-  there is no cache lifetime option, no minimum version check, no feature table, no
+- The homeserver compatibility design (§3.3) is only partly implemented. Features and
+  endpoints are declared (D26), but nothing uses them at runtime yet: `/versions` is not
+  cached, and there is no cache lifetime option, no minimum version check, no
   `SupportsAsync` and no explanation of missing endpoints.
 - Only `m.id.user` identifiers are supported.
 - XML documentation is generated and shipped, so IDEs show it. Warning CS1591, for missing
@@ -1271,8 +1331,7 @@ Entries so far:
 The feature roadmap lives in [TODO.md](../TODO.md). Near-term technical work:
 
 1. Homeserver compatibility (D24 to D26): the `/versions` cache and its lifetime option,
-   the minimum version check, the feature table, `SupportsAsync` and clear errors for
-   missing endpoints.
+   the minimum version check, `SupportsAsync` and clear errors for missing endpoints.
 2. Server discovery through `.well-known/matrix/client`.
 
 Later considerations, not designed yet:

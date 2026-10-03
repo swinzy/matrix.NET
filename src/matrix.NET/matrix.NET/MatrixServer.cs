@@ -73,8 +73,7 @@ public class MatrixServer : ISharedEndpoints
 
     public async Task<List<LoginFlow>> GetSupportedLoginTypesAsync(CancellationToken cancellationToken = default)
     {
-        var response = await _transport.SendAsync<LoginFlowsResponse>(HttpMethod.Get,
-            "_matrix/client/v3/login", AuthRequirement.None, cancellationToken);
+        var response = await _transport.SendAsync<LoginFlowsResponse>(Endpoints.LoginFlows, cancellationToken);
         return response.Flows ?? [];
     }
 
@@ -85,8 +84,8 @@ public class MatrixServer : ISharedEndpoints
     /// <param name="cancellationToken">Cancels the request.</param>
     public async Task<MatrixSession> LoginAsync(LoginRequest request, CancellationToken cancellationToken = default)
     {
-        var response = await _transport.SendAsync<LoginRequest, LoginResponse>(HttpMethod.Post,
-            "_matrix/client/v3/login", request, AuthRequirement.None, cancellationToken);
+        var response = await _transport.SendAsync<LoginRequest, LoginResponse>(Endpoints.Login, request,
+            cancellationToken);
 
         return new MatrixSession
         {

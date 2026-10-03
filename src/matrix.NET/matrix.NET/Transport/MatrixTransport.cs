@@ -59,17 +59,17 @@ internal sealed class MatrixTransport
     /// <see cref="DefaultTimeout"/>, and <see cref="Timeout.InfiniteTimeSpan"/> disables it. A timeout
     /// throws <see cref="TaskCanceledException"/> with an inner <see cref="TimeoutException"/>.
     /// </summary>
-    public Task<TResponse> SendAsync<TResponse>(HttpMethod method, string path, AuthRequirement auth,
-        CancellationToken cancellationToken = default, TimeSpan? timeout = null) =>
-        SendCoreAsync<TResponse>(method, path, null, null, auth, timeout, cancellationToken);
+    public Task<TResponse> SendAsync<TResponse>(Endpoint endpoint, CancellationToken cancellationToken = default,
+        TimeSpan? timeout = null) =>
+        SendCoreAsync<TResponse>(endpoint, null, null, timeout, cancellationToken);
 
     /// <inheritdoc cref="SendAsync{TResponse}"/>
-    public Task<TResponse> SendAsync<TRequest, TResponse>(HttpMethod method, string path, TRequest body,
-        AuthRequirement auth, CancellationToken cancellationToken = default, TimeSpan? timeout = null) =>
-        SendCoreAsync<TResponse>(method, path, body, typeof(TRequest), auth, timeout, cancellationToken);
+    public Task<TResponse> SendAsync<TRequest, TResponse>(Endpoint endpoint, TRequest body,
+        CancellationToken cancellationToken = default, TimeSpan? timeout = null) =>
+        SendCoreAsync<TResponse>(endpoint, body, typeof(TRequest), timeout, cancellationToken);
 
-    private async Task<TResponse> SendCoreAsync<TResponse>(HttpMethod method, string path, object? body,
-        Type? bodyType, AuthRequirement auth, TimeSpan? timeout, CancellationToken cancellationToken)
+    private async Task<TResponse> SendCoreAsync<TResponse>(Endpoint endpoint, object? body, Type? bodyType,
+        TimeSpan? timeout, CancellationToken cancellationToken)
     {
         var effectiveTimeout = timeout ?? DefaultTimeout;
         using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -79,7 +79,7 @@ internal sealed class MatrixTransport
         {
             // Requests are built from their parts rather than reused, so they can be rebuilt
             // when retrying after a token refresh
-            using var request = CreateRequest(method, path, body, bodyType, auth);
+            using var request = CreateRequest(endpoint, body, bodyType);
             using var response = await _clientSource().SendAsync(request, timeoutSource.Token);
             await EnsureSuccessAsync(response, request.Headers.Authorization?.Parameter, timeoutSource.Token);
 
@@ -90,24 +90,23 @@ internal sealed class MatrixTransport
                                                    !cancellationToken.IsCancellationRequested)
         {
             // Same shape as HttpClient's own timeout, so existing handling keeps working
-            throw new TaskCanceledException($"{method} {path} timed out after {effectiveTimeout.TotalSeconds} seconds.",
+            throw new TaskCanceledException($"{endpoint} timed out after {effectiveTimeout.TotalSeconds} seconds.",
                 new TimeoutException(e.Message, e));
         }
     }
 
-    private HttpRequestMessage CreateRequest(HttpMethod method, string path, object? body, Type? bodyType,
-        AuthRequirement auth)
+    private HttpRequestMessage CreateRequest(Endpoint endpoint, object? body, Type? bodyType)
     {
-        var request = new HttpRequestMessage(method, new Uri(Homeserver, path));
+        var request = new HttpRequestMessage(endpoint.Method, new Uri(Homeserver, endpoint.Path));
 
         if (bodyType is not null)
             request.Content = JsonContent.Create(body, bodyType, options: JsonOptions);
 
-        var accessToken = auth == AuthRequirement.None ? null : _accessTokenSource?.Invoke();
+        var accessToken = endpoint.Auth == AuthRequirement.None ? null : _accessTokenSource?.Invoke();
         if (accessToken is not null)
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
-        else if (auth == AuthRequirement.Required)
-            throw new InvalidOperationException($"{method} {path} requires an access token, but none is available.");
+        else if (endpoint.Auth == AuthRequirement.Required)
+            throw new InvalidOperationException($"{endpoint} requires an access token, but none is available.");
 
         return request;
     }

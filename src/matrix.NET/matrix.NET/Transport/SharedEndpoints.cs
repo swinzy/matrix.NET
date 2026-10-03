@@ -7,6 +7,5 @@ namespace TeamBanana.MatrixDotNet.Transport;
 internal sealed class SharedEndpoints(MatrixTransport transport) : ISharedEndpoints
 {
     public Task<VersionsResponse> GetVersionsAsync(CancellationToken cancellationToken = default) =>
-        transport.SendAsync<VersionsResponse>(HttpMethod.Get, "_matrix/client/versions",
-            AuthRequirement.Optional, cancellationToken);
+        transport.SendAsync<VersionsResponse>(Endpoints.Versions, cancellationToken);
 }

@@ -146,15 +146,14 @@ public class MatrixClient : ISharedEndpoints
     /// logged-in users are included.
     /// </remarks>
     public Task<VersionsResponse> GetVersionsAsync(CancellationToken cancellationToken = default) =>
-        InvokeAsync(_shared.GetVersionsAsync, AuthRequirement.Optional, cancellationToken);
+        InvokeAsync(Endpoints.Versions, _shared.GetVersionsAsync, cancellationToken);
 
     /// <summary>
     /// Asks the homeserver who owns the session's access token.
     /// </summary>
     /// <param name="cancellationToken">Cancels the request.</param>
     public Task<WhoAmIResponse> WhoAmIAsync(CancellationToken cancellationToken = default) =>
-        InvokeAsync(ct => _transport.SendAsync<WhoAmIResponse>(HttpMethod.Get, "_matrix/client/v3/account/whoami",
-            AuthRequirement.Required, ct), AuthRequirement.Required, cancellationToken);
+        InvokeAsync<WhoAmIResponse>(Endpoints.WhoAmI, cancellationToken);
 
     /// <summary>
     /// Logs out, invalidating the session's tokens and device on the homeserver. Afterwards the
@@ -172,8 +171,7 @@ public class MatrixClient : ISharedEndpoints
         EnsureUsable();
         try
         {
-            await _transport.SendAsync<EmptyResponse>(HttpMethod.Post, "_matrix/client/v3/logout",
-                AuthRequirement.Required, cancellationToken);
+            await _transport.SendAsync<EmptyResponse>(Endpoints.Logout, cancellationToken);
         }
         catch (MatrixUnknownTokenException)
         {
@@ -183,8 +181,12 @@ public class MatrixClient : ISharedEndpoints
         TryChangeState(MatrixClientState.LoggedOut, new SessionChangedEventArgs(SessionChangeKind.LoggedOut));
     }
 
-    // Every endpoint goes through here, so state checks, token refresh and locking apply uniformly
-    private async Task<T> InvokeAsync<T>(Func<CancellationToken, Task<T>> call, AuthRequirement auth,
+    private Task<T> InvokeAsync<T>(Endpoint endpoint, CancellationToken cancellationToken) =>
+        InvokeAsync(endpoint, ct => _transport.SendAsync<T>(endpoint, ct), cancellationToken);
+
+    // Every endpoint goes through here, so state checks, token refresh and locking apply uniformly.
+    // The endpoint must be the one call sends to
+    private async Task<T> InvokeAsync<T>(Endpoint endpoint, Func<CancellationToken, Task<T>> call,
         CancellationToken cancellationToken)
     {
         EnsureUsable();
@@ -202,7 +204,7 @@ public class MatrixClient : ISharedEndpoints
 
         // Only an endpoint that requires a token proves the lock is lifted; an optional one may have
         // been answered without looking at the token
-        if (auth == AuthRequirement.Required)
+        if (endpoint.Auth == AuthRequirement.Required)
             TryChangeState(MatrixClientState.Active, new SessionChangedEventArgs(SessionChangeKind.Unlocked),
                 MatrixClientState.Locked);
 
@@ -279,9 +281,8 @@ public class MatrixClient : ISharedEndpoints
         RefreshResponse response;
         try
         {
-            response = await _transport.SendAsync<RefreshRequest, RefreshResponse>(HttpMethod.Post,
-                "_matrix/client/v3/refresh", new RefreshRequest(session.RefreshToken!), AuthRequirement.None,
-                cancellationToken);
+            response = await _transport.SendAsync<RefreshRequest, RefreshResponse>(Endpoints.Refresh,
+                new RefreshRequest(session.RefreshToken!), cancellationToken);
         }
         catch (MatrixUnknownTokenException e)
         {
