@@ -13,7 +13,7 @@ namespace TeamBanana.MatrixDotNet.Transport;
 internal sealed class MatrixTransport
 {
     // Resolves only the source-generated library types, never through reflection (D29)
-    internal static JsonSerializerOptions JsonOptions => MatrixJsonContext.Default.Options;
+    internal static JsonSerializerOptions JsonOptions => MatrixJsonContext.Instance.Options;
 
     internal static JsonTypeInfo<T> TypeInfo<T>() => (JsonTypeInfo<T>)JsonOptions.GetTypeInfo(typeof(T));
 

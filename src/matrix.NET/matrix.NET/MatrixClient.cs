@@ -205,7 +205,7 @@ public class MatrixClient : ISharedEndpoints
             throw new ArgumentException($"The message is invalid: {error}", nameof(content));
 
         return SendEventCoreAsync(roomId, "m.room.message",
-            JsonSerializer.SerializeToNode(content, MatrixJsonContext.Default.MessageContent), transactionId,
+            JsonSerializer.SerializeToNode(content, MatrixJsonContext.Instance.MessageContent), transactionId,
             cancellationToken);
     }
 

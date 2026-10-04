@@ -21,9 +21,9 @@ internal static class ReflectionJson
     [RequiresDynamicCode(Message)]
     public static JsonTypeInfo<T> TypeInfo<T>()
     {
-        _options ??= new JsonSerializerOptions(MatrixJsonContext.Default.Options)
+        _options ??= new JsonSerializerOptions(MatrixJsonContext.Instance.Options)
         {
-            TypeInfoResolver = JsonTypeInfoResolver.Combine(MatrixJsonContext.Default, new DefaultJsonTypeInfoResolver())
+            TypeInfoResolver = JsonTypeInfoResolver.Combine(MatrixJsonContext.Instance, new DefaultJsonTypeInfoResolver())
         };
         return (JsonTypeInfo<T>)_options.GetTypeInfo(typeof(T));
     }

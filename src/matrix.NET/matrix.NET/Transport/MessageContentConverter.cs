@@ -16,7 +16,7 @@ internal sealed class MessageContentConverter : JsonConverter<MessageContent>
     // converter, so delegating to it cannot recurse
     private static readonly Dictionary<string, JsonTypeInfo> KnownTypes = new()
     {
-        ["m.text"] = MatrixJsonContext.Default.TextMessageContent
+        ["m.text"] = MatrixJsonContext.Instance.TextMessageContent
     };
 
     public override MessageContent Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)

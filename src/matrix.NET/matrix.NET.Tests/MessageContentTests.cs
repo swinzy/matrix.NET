@@ -7,10 +7,10 @@ namespace TeamBanana.MatrixDotNet.Tests;
 public class MessageContentTests
 {
     private static MessageContent Read(string json) =>
-        JsonSerializer.Deserialize(json, MatrixJsonContext.Default.MessageContent)!;
+        JsonSerializer.Deserialize(json, MatrixJsonContext.Instance.MessageContent)!;
 
     private static string Write(MessageContent content) =>
-        JsonSerializer.Serialize(content, MatrixJsonContext.Default.MessageContent);
+        JsonSerializer.Serialize(content, MatrixJsonContext.Instance.MessageContent);
 
     [Fact]
     public void Read_TextWithMsgTypeAnywhere()

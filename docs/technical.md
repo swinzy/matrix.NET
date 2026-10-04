@@ -291,7 +291,7 @@ cannot creep back in.
 
 - **Every library type is source-generated.** `Transport.MatrixJsonContext` lists each type
   the library serialises, with the snake_case naming policy and null omission as generation
-  options. The transport resolves types only through it. A type missing from it fails at
+  options. The library uses its `Instance`, which adds relaxed escaping (D31). The transport resolves types only through it. A type missing from it fails at
   runtime, which the endpoint's unit tests catch, so adding an endpoint means adding its
   request and response types there too.
 - **Content supplied by the app has two overloads,** as `System.Net.Http.Json` does for
@@ -321,6 +321,34 @@ cannot creep back in.
 - **Now rather than later:** there were five serialisation call sites and about a dozen
   types. Every endpoint added before the switch would have made it bigger.
 - Source generation also starts faster and allocates less, which benefits every app.
+
+#### D31. JSON is written with relaxed escaping (Decided)
+
+The library writes non-ASCII text and HTML characters as they are, using
+`JavaScriptEncoder.UnsafeRelaxedJsonEscaping`, instead of System.Text.Json's default of
+escaping everything outside ASCII as `\uXXXX`. Quotes, backslashes and control characters
+are still escaped, so the JSON stays valid.
+
+```
+default (84 bytes): {"Body":"\u4F60\u597D\uFF0C\u4E16\u754C \u003Cb\u003Ehi\u003C/b\u003E \uD83D\uDE00"}
+relaxed (49 bytes): {"Body":"你好，世界 <b>hi</b> \uD83D\uDE00"}
+```
+
+- It applies to everything the library writes: requests, content sent through the reflection
+  and `JsonObject` overloads, and `MatrixSession.ToJson`. Content sent with the app's own
+  `JsonTypeInfo` is escaped as the app's options say.
+- `[JsonSourceGenerationOptions]` cannot set an encoder, so the library uses
+  `MatrixJsonContext.Instance`, created with options that repeat the attribute's settings and
+  add the encoder. `MatrixJsonContext.Default` must not be used.
+
+**Why:**
+
+- **Size:** escaped CJK text takes six bytes per character instead of three, so messages in
+  Chinese or Japanese nearly double.
+- **Readability:** escaped requests are unreadable in logs and packet captures.
+- **"Unsafe" does not apply here.** The name warns that the output is not safe to embed in
+  HTML or a `<script>` block. The library sends JSON to an HTTP API, where the homeserver
+  parses it; both forms mean exactly the same to it.
 
 ### 3.2 Authenticated session design
 

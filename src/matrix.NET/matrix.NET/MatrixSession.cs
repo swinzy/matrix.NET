@@ -47,7 +47,7 @@ public sealed record MatrixSession
     public DateTimeOffset? ExpiresAt { get; init; }
 
     /// <summary>Serialises the session in its stable format.</summary>
-    public string ToJson() => JsonSerializer.Serialize(this, MatrixJsonContext.Default.MatrixSession);
+    public string ToJson() => JsonSerializer.Serialize(this, MatrixJsonContext.Instance.MatrixSession);
 
     /// <summary>Restores a session serialised by <see cref="ToJson"/>, in any supported format version.</summary>
     /// <exception cref="JsonException">
@@ -65,7 +65,7 @@ public sealed record MatrixSession
                 $"reads up to version {CurrentFormatVersion}. Upgrade the library to restore it.");
         }
 
-        var session = document.Deserialize(MatrixJsonContext.Default.MatrixSession)
+        var session = document.Deserialize(MatrixJsonContext.Instance.MatrixSession)
                       ?? throw new JsonException("The session JSON is null.");
         // Source generation sets a missing init-only property to its default rather than keeping its
         // initialiser, and sessions saved before the field existed are version 1

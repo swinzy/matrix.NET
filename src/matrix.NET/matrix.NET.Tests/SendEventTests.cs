@@ -61,9 +61,34 @@ public partial class SendEventTests
             FormattedBody = "<em>hi</em>"
         }, cancellationToken: Ct);
 
-        Assert.True(JsonNode.DeepEquals(
-            JsonNode.Parse("""{"msgtype":"m.text","body":"*hi*","format":"org.matrix.custom.html","formatted_body":"<em>hi</em>"}"""),
-            JsonNode.Parse(handler.RequestBody!)));
+        Assert.Equal(
+            """{"msgtype":"m.text","body":"*hi*","format":"org.matrix.custom.html","formatted_body":"<em>hi</em>"}""",
+            handler.RequestBody);
+    }
+
+    // Relaxed escaping (D31): readable, and non-Latin text about half the size
+    [Fact]
+    public async Task SendMessageAsync_WritesNonAsciiAndHtmlUnescaped()
+    {
+        var handler = new StubHttpMessageHandler(HttpStatusCode.OK, Sent);
+
+        await CreateClient(handler).SendMessageAsync("!abc:example.org", new TextMessageContent("你好，<b>世界</b>"),
+            cancellationToken: Ct);
+
+        Assert.Equal("""{"msgtype":"m.text","body":"你好，<b>世界</b>"}""", handler.RequestBody);
+    }
+
+    [Fact]
+    public async Task SendEventAsync_WritesNonAsciiUnescapedWhateverTheOverload()
+    {
+        var handler = new StubHttpMessageHandler(HttpStatusCode.OK, Sent);
+        var client = CreateClient(handler);
+
+        await client.SendEventAsync("!abc:example.org", "com.example.x", new JsonObject { ["text"] = "日本語" }, cancellationToken: Ct);
+        Assert.Equal("""{"text":"日本語"}""", handler.RequestBody);
+
+        await client.SendEventAsync("!abc:example.org", "com.example.x", new GameMove("é", "ü"), cancellationToken: Ct);
+        Assert.Equal("""{"from_square":"é","to_square":"ü"}""", handler.RequestBody);
     }
 
     [Fact]
@@ -72,7 +97,7 @@ public partial class SendEventTests
         var handler = new StubHttpMessageHandler(HttpStatusCode.OK, Sent);
         var client = CreateClient(handler);
         var invalid = System.Text.Json.JsonSerializer.Deserialize("""{"body":"hi"}""",
-            Transport.MatrixJsonContext.Default.MessageContent)!;
+            Transport.MatrixJsonContext.Instance.MessageContent)!;
 
         await Assert.ThrowsAsync<ArgumentException>(() =>
             client.SendMessageAsync("!abc:example.org", new TextMessageContent("hi") { Format = "x" }, cancellationToken: Ct));
@@ -85,7 +110,7 @@ public partial class SendEventTests
     {
         const string json = """{"body":"Vote!","msgtype":"org.example.poll","answers":[1,2]}""";
         var handler = new StubHttpMessageHandler(HttpStatusCode.OK, Sent);
-        var unknown = System.Text.Json.JsonSerializer.Deserialize(json, Transport.MatrixJsonContext.Default.MessageContent)!;
+        var unknown = System.Text.Json.JsonSerializer.Deserialize(json, Transport.MatrixJsonContext.Instance.MessageContent)!;
 
         await CreateClient(handler).SendMessageAsync("!abc:example.org", unknown, cancellationToken: Ct);
 
