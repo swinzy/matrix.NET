@@ -9,6 +9,9 @@
         <!-- Ship XML docs so IDEs show them; CS1591 is silenced until all public members are documented -->
         <GenerateDocumentationFile>true</GenerateDocumentationFile>
         <NoWarn>$(NoWarn);CS1591</NoWarn>
+        <!-- Trimming and Native AOT support (D29): analysers on, and their warnings fail the build -->
+        <IsAotCompatible>true</IsAotCompatible>
+        <WarningsAsErrors>$(WarningsAsErrors);IL2026;IL2046;IL2057;IL2060;IL2067;IL2070;IL2072;IL2075;IL2077;IL2080;IL2087;IL2090;IL2091;IL3050;IL3051</WarningsAsErrors>
     </PropertyGroup>
 
     <ItemGroup>

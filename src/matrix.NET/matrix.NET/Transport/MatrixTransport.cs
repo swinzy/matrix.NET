@@ -2,7 +2,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
-using System.Text.Json.Serialization;
+using System.Text.Json.Serialization.Metadata;
 
 namespace TeamBanana.MatrixDotNet.Transport;
 
@@ -12,11 +12,10 @@ namespace TeamBanana.MatrixDotNet.Transport;
 /// </summary>
 internal sealed class MatrixTransport
 {
-    internal static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
-    };
+    // Resolves only the source-generated library types, never through reflection (D29)
+    internal static JsonSerializerOptions JsonOptions => MatrixJsonContext.Default.Options;
+
+    internal static JsonTypeInfo<T> TypeInfo<T>() => (JsonTypeInfo<T>)JsonOptions.GetTypeInfo(typeof(T));
 
     /// <summary>
     /// Applied to each request unless overridden; matches <see cref="HttpClient.Timeout"/>'s default.
@@ -83,7 +82,7 @@ internal sealed class MatrixTransport
             using var response = await _clientSource().SendAsync(request, timeoutSource.Token);
             await EnsureSuccessAsync(response, request.Headers.Authorization?.Parameter, timeoutSource.Token);
 
-            return await response.Content.ReadFromJsonAsync<TResponse>(JsonOptions, timeoutSource.Token)
+            return await response.Content.ReadFromJsonAsync(TypeInfo<TResponse>(), timeoutSource.Token)
                    ?? throw new JsonException($"The homeserver returned an empty {typeof(TResponse).Name}.");
         }
         catch (OperationCanceledException e) when (timeoutSource.IsCancellationRequested &&
@@ -103,7 +102,7 @@ internal sealed class MatrixTransport
         var request = new HttpRequestMessage(endpoint.Method, new Uri(Homeserver, endpoint.Path));
 
         if (bodyType is not null)
-            request.Content = JsonContent.Create(body, bodyType, options: JsonOptions);
+            request.Content = JsonContent.Create(body, JsonOptions.GetTypeInfo(bodyType));
 
         var accessToken = endpoint.Auth == AuthRequirement.None ? null : _accessTokenSource?.Invoke();
         if (accessToken is not null)
@@ -123,7 +122,7 @@ internal sealed class MatrixTransport
         ErrorResponse? error = null;
         try
         {
-            error = await response.Content.ReadFromJsonAsync<ErrorResponse>(JsonOptions, cancellationToken);
+            error = await response.Content.ReadFromJsonAsync(TypeInfo<ErrorResponse>(), cancellationToken);
         }
         catch (JsonException)
         {
@@ -160,5 +159,5 @@ internal sealed class MatrixTransport
     private static Uri WithTrailingSlash(Uri uri) =>
         uri.AbsolutePath.EndsWith('/') ? uri : new Uri(uri.AbsoluteUri + "/");
 
-    private record ErrorResponse(string Errcode, string? Error, bool? SoftLogout);
+    internal record ErrorResponse(string Errcode, string? Error, bool? SoftLogout);
 }

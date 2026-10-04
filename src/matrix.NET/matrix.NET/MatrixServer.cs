@@ -99,5 +99,5 @@ public class MatrixServer : ISharedEndpoints
         };
     }
 
-    private record LoginFlowsResponse(List<LoginFlow>? Flows);
+    internal record LoginFlowsResponse(List<LoginFlow>? Flows);
 }

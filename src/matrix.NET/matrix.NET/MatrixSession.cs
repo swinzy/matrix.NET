@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using TeamBanana.MatrixDotNet.Transport;
 
 namespace TeamBanana.MatrixDotNet;
 
@@ -16,11 +17,6 @@ public sealed record MatrixSession
 {
     /// <summary>The format version written by this version of the library.</summary>
     public const int CurrentFormatVersion = 1;
-
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
-    };
 
     /// <summary>Version of the serialised format.</summary>
     [JsonPropertyName("format_version")]
@@ -51,7 +47,7 @@ public sealed record MatrixSession
     public DateTimeOffset? ExpiresAt { get; init; }
 
     /// <summary>Serialises the session in its stable format.</summary>
-    public string ToJson() => JsonSerializer.Serialize(this, JsonOptions);
+    public string ToJson() => JsonSerializer.Serialize(this, MatrixJsonContext.Default.MatrixSession);
 
     /// <summary>Restores a session serialised by <see cref="ToJson"/>, in any supported format version.</summary>
     /// <exception cref="JsonException">
@@ -61,16 +57,19 @@ public sealed record MatrixSession
     {
         // Check the version before binding, so a newer format fails clearly rather than half-parsed
         using var document = JsonDocument.Parse(json);
-        if (document.RootElement.TryGetProperty("format_version", out var version) &&
-            version.TryGetInt32(out var formatVersion) && formatVersion > CurrentFormatVersion)
+        var hasVersion = document.RootElement.TryGetProperty("format_version", out var version);
+        if (hasVersion && version.TryGetInt32(out var formatVersion) && formatVersion > CurrentFormatVersion)
         {
             throw new JsonException(
                 $"The session was saved in format version {formatVersion}, but this version of the library " +
                 $"reads up to version {CurrentFormatVersion}. Upgrade the library to restore it.");
         }
 
-        return document.Deserialize<MatrixSession>(JsonOptions)
-               ?? throw new JsonException("The session JSON is null.");
+        var session = document.Deserialize(MatrixJsonContext.Default.MatrixSession)
+                      ?? throw new JsonException("The session JSON is null.");
+        // Source generation sets a missing init-only property to its default rather than keeping its
+        // initialiser, and sessions saved before the field existed are version 1
+        return hasVersion ? session : session with { FormatVersion = 1 };
     }
 
     /// <summary>Describes the session with its tokens masked, so it is safe to log.</summary>

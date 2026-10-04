@@ -61,6 +61,7 @@ and is not part of the repository.
 | `Transport.AuthRequirement` (internal) | Whether an endpoint needs an access token: `None`, `Optional` or `Required` |
 | `Transport.ISharedEndpoints` (internal) | Endpoints usable with or without a session, implemented by both public types (D19) |
 | `Transport.SharedEndpoints` (internal) | The single implementation of those endpoints |
+| `Transport.MatrixJsonContext` (internal) | Source-generated JSON metadata for every library type (D29) |
 | `Compatibility.HomeserverQuirks` (internal) | Every tolerated deviation of a homeserver from the spec (D27) |
 | `MatrixVersion` | A comparable spec version; `Minimum` is v1.1 (D24) |
 | `TransactionId` | Creates transaction IDs for idempotent requests (D28) |
@@ -273,6 +274,37 @@ separate packages is still open.
 **Why:** The SDKs researched are either thin, like the matrix-nio and mautrix-python cores,
 or full, like matrix-rust-sdk. A layered design serves both audiences. It also keeps the
 endpoint layer easy to test in isolation.
+
+#### D29. Trimming and Native AOT are supported; library types never use reflection (Decided)
+
+The library is marked `IsAotCompatible`, which turns on the trimming and AOT analysers, and
+their warnings (IL2026, IL3050 and related) are errors, so reflection-based serialisation
+cannot creep back in.
+
+- **Every library type is source-generated.** `Transport.MatrixJsonContext` lists each type
+  the library serialises, with the snake_case naming policy and null omission as generation
+  options. The transport resolves types only through it. A type missing from it fails at
+  runtime, which the endpoint's unit tests catch, so adding an endpoint means adding its
+  request and response types there too.
+- **Content supplied by the app has two overloads,** as `System.Net.Http.Json` does for
+  `PostAsJsonAsync`:
+  - a convenient one taking `TContent`, serialised by reflection with the library's naming
+    policy. It is marked `[RequiresUnreferencedCode]` and `[RequiresDynamicCode]`, so trimmed
+    and AOT apps get a warning pointing them to the other;
+  - one taking a `JsonTypeInfo<TContent>` from the app's own source-generated context. Its
+    naming policy is the app's; it should be snake_case to follow Matrix conventions.
+- **Raw JSON content has its own overload taking `JsonObject`,** which needs no context and
+  is AOT-safe, for apps that build or forward content as JSON.
+- Publishing an app with Native AOT is not tested yet; the analysers catch what they can.
+
+**Why:**
+
+- **Trimming is on by default for Blazor WebAssembly and for MAUI release builds,** and Native
+  AOT suits bots and command-line tools. Reflection-based serialisation of library types can
+  break in all of them.
+- **Now rather than later:** there were five serialisation call sites and about a dozen
+  types. Every endpoint added before the switch would have made it bigger.
+- Source generation also starts faster and allocates less, which benefits every app.
 
 ### 3.2 Authenticated session design
 
@@ -1384,6 +1416,11 @@ cannot prevent that.
   - it said `identifier` was always required.
 - **Required vs example-only fields.** Some fields are only shown in examples, not listed as
   required. Judge semantically and record the reasoning.
+- **Source generation resets missing init-only properties.** With source-generated
+  serialisation, a property declared `{ get; init; } = value` that is missing from the JSON is
+  set to its type's default, not left at `value`, unlike reflection-based serialisation.
+  Avoid initialisers on init-only properties of deserialised types, or handle the missing
+  field explicitly, as `MatrixSession.FromJson` does for `format_version`.
 - **Polymorphic discriminator clash.** A property that serialises to the discriminator name
   (`type`) must be `[JsonIgnore]`d, or System.Text.Json fails.
 - **`IHttpClientFactory` shares handlers.** Never put per-account state in a

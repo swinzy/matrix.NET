@@ -401,15 +401,15 @@ public class MatrixClient : ISharedEndpoints
         }
     }
 
-    private record EmptyResponse;
+    internal record EmptyResponse;
 
-    private record JoinedRoomsResponse(List<string> JoinedRooms);
+    internal record JoinedRoomsResponse(List<string> JoinedRooms);
 
-    private record LeaveRequest(string? Reason);
+    internal record LeaveRequest(string? Reason);
 
-    private record RefreshRequest(string RefreshToken);
+    internal record RefreshRequest(string RefreshToken);
 
-    private class RefreshResponse
+    internal class RefreshResponse
     {
         public required string AccessToken { get; init; }
         public string? RefreshToken { get; init; }

@@ -40,7 +40,7 @@ public class EndpointTests
         var transport = new MatrixTransport(new Uri("https://matrix.example.org/"), () => new HttpClient(handler), () => "token");
 
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            transport.SendAsync<object>(Template, TestContext.Current.CancellationToken));
+            transport.SendAsync<WhoAmIResponse>(Template, TestContext.Current.CancellationToken));
 
         Assert.Null(handler.Request);
     }

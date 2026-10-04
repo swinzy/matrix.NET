@@ -15,8 +15,6 @@ public class MatrixTransportTests
 
     private static StubHttpMessageHandler OkHandler() => new(HttpStatusCode.OK, """{"user_id":"@a:example.org"}""");
 
-    private record WhoAmI(string UserId);
-
     [Theory]
     [InlineData("https://matrix.example.org/", "https://matrix.example.org/_matrix/client/v3/account/whoami")]
     [InlineData("https://matrix.example.org", "https://matrix.example.org/_matrix/client/v3/account/whoami")]
@@ -27,7 +25,7 @@ public class MatrixTransportTests
         var handler = OkHandler();
 
         await CreateTransport(handler, homeserver: homeserver)
-            .SendAsync<WhoAmI>(WhoAmIAt(AuthRequirement.None), TestContext.Current.CancellationToken);
+            .SendAsync<WhoAmIResponse>(WhoAmIAt(AuthRequirement.None), TestContext.Current.CancellationToken);
 
         Assert.Equal(expected, handler.Request!.RequestUri!.ToString());
     }
@@ -37,7 +35,7 @@ public class MatrixTransportTests
     {
         var handler = OkHandler();
 
-        await CreateTransport(handler).SendAsync<WhoAmI>(WhoAmIAt(AuthRequirement.None), TestContext.Current.CancellationToken);
+        await CreateTransport(handler).SendAsync<WhoAmIResponse>(WhoAmIAt(AuthRequirement.None), TestContext.Current.CancellationToken);
 
         Assert.Null(handler.RequestBody);
     }
@@ -46,7 +44,7 @@ public class MatrixTransportTests
     public async Task SendAsync_DeserialisesResponse()
     {
         var response = await CreateTransport(OkHandler())
-            .SendAsync<WhoAmI>(WhoAmIAt(AuthRequirement.None), TestContext.Current.CancellationToken);
+            .SendAsync<WhoAmIResponse>(WhoAmIAt(AuthRequirement.None), TestContext.Current.CancellationToken);
 
         Assert.Equal("@a:example.org", response.UserId);
     }
@@ -56,7 +54,7 @@ public class MatrixTransportTests
     {
         var handler = OkHandler();
 
-        await CreateTransport(handler, "secret").SendAsync<WhoAmI>(WhoAmIAt(AuthRequirement.Required), TestContext.Current.CancellationToken);
+        await CreateTransport(handler, "secret").SendAsync<WhoAmIResponse>(WhoAmIAt(AuthRequirement.Required), TestContext.Current.CancellationToken);
 
         Assert.Equal("Bearer", handler.Request!.Headers.Authorization!.Scheme);
         Assert.Equal("secret", handler.Request.Headers.Authorization.Parameter);
@@ -68,7 +66,7 @@ public class MatrixTransportTests
         var handler = OkHandler();
 
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            CreateTransport(handler).SendAsync<WhoAmI>(WhoAmIAt(AuthRequirement.Required), TestContext.Current.CancellationToken));
+            CreateTransport(handler).SendAsync<WhoAmIResponse>(WhoAmIAt(AuthRequirement.Required), TestContext.Current.CancellationToken));
 
         Assert.Null(handler.Request);
     }
@@ -78,7 +76,7 @@ public class MatrixTransportTests
     {
         var handler = OkHandler();
 
-        await CreateTransport(handler, "secret").SendAsync<WhoAmI>(WhoAmIAt(AuthRequirement.Optional), TestContext.Current.CancellationToken);
+        await CreateTransport(handler, "secret").SendAsync<WhoAmIResponse>(WhoAmIAt(AuthRequirement.Optional), TestContext.Current.CancellationToken);
 
         Assert.Equal("secret", handler.Request!.Headers.Authorization!.Parameter);
     }
@@ -88,7 +86,7 @@ public class MatrixTransportTests
     {
         var handler = OkHandler();
 
-        await CreateTransport(handler).SendAsync<WhoAmI>(WhoAmIAt(AuthRequirement.Optional), TestContext.Current.CancellationToken);
+        await CreateTransport(handler).SendAsync<WhoAmIResponse>(WhoAmIAt(AuthRequirement.Optional), TestContext.Current.CancellationToken);
 
         Assert.Null(handler.Request!.Headers.Authorization);
     }
@@ -98,7 +96,7 @@ public class MatrixTransportTests
     {
         var handler = OkHandler();
 
-        await CreateTransport(handler, "secret").SendAsync<WhoAmI>(WhoAmIAt(AuthRequirement.None), TestContext.Current.CancellationToken);
+        await CreateTransport(handler, "secret").SendAsync<WhoAmIResponse>(WhoAmIAt(AuthRequirement.None), TestContext.Current.CancellationToken);
 
         Assert.Null(handler.Request!.Headers.Authorization);
     }
@@ -117,9 +115,9 @@ public class MatrixTransportTests
             },
             () => token);
 
-        await transport.SendAsync<WhoAmI>(WhoAmIAt(AuthRequirement.Required), TestContext.Current.CancellationToken);
+        await transport.SendAsync<WhoAmIResponse>(WhoAmIAt(AuthRequirement.Required), TestContext.Current.CancellationToken);
         token = "second";
-        await transport.SendAsync<WhoAmI>(WhoAmIAt(AuthRequirement.Required), TestContext.Current.CancellationToken);
+        await transport.SendAsync<WhoAmIResponse>(WhoAmIAt(AuthRequirement.Required), TestContext.Current.CancellationToken);
 
         Assert.Equal("second", handler.Request!.Headers.Authorization!.Parameter);
         Assert.Equal(2, clientsCreated);
@@ -131,7 +129,7 @@ public class MatrixTransportTests
         var handler = new StubHttpMessageHandler(HttpStatusCode.OK, "null");
 
         await Assert.ThrowsAsync<System.Text.Json.JsonException>(() =>
-            CreateTransport(handler).SendAsync<WhoAmI>(WhoAmIAt(AuthRequirement.None), TestContext.Current.CancellationToken));
+            CreateTransport(handler).SendAsync<WhoAmIResponse>(WhoAmIAt(AuthRequirement.None), TestContext.Current.CancellationToken));
     }
 
     // Error codes outside MatrixErrorCodes, e.g. added by a newer spec or custom to a homeserver,
@@ -145,7 +143,7 @@ public class MatrixTransportTests
             $$"""{"errcode":"{{errorCode}}","error":"Something went wrong"}""");
 
         var exception = await Assert.ThrowsAsync<MatrixException>(() =>
-            CreateTransport(handler).SendAsync<WhoAmI>(WhoAmIAt(AuthRequirement.None), TestContext.Current.CancellationToken));
+            CreateTransport(handler).SendAsync<WhoAmIResponse>(WhoAmIAt(AuthRequirement.None), TestContext.Current.CancellationToken));
 
         Assert.Equal(errorCode, exception.ErrorCode);
         Assert.Equal("Something went wrong", exception.Message);
@@ -158,7 +156,7 @@ public class MatrixTransportTests
             """{"errcode":"M_USER_LIMIT_EXCEEDED","error":"Quota exceeded","info_uri":"https://example.org/limits","can_upgrade":true,"some_future_field":{"nested":[1,2]}}""");
 
         var exception = await Assert.ThrowsAsync<MatrixException>(() =>
-            CreateTransport(handler).SendAsync<WhoAmI>(WhoAmIAt(AuthRequirement.None), TestContext.Current.CancellationToken));
+            CreateTransport(handler).SendAsync<WhoAmIResponse>(WhoAmIAt(AuthRequirement.None), TestContext.Current.CancellationToken));
 
         Assert.Equal(MatrixErrorCodes.UserLimitExceeded, exception.ErrorCode);
     }
@@ -170,7 +168,7 @@ public class MatrixTransportTests
             """{"user_id":"@a:example.org","some_future_field":true}""");
 
         var response = await CreateTransport(handler)
-            .SendAsync<WhoAmI>(WhoAmIAt(AuthRequirement.None), TestContext.Current.CancellationToken);
+            .SendAsync<WhoAmIResponse>(WhoAmIAt(AuthRequirement.None), TestContext.Current.CancellationToken);
 
         Assert.Equal("@a:example.org", response.UserId);
     }
@@ -181,7 +179,7 @@ public class MatrixTransportTests
         var handler = new DelayingHandler(TimeSpan.FromSeconds(30));
 
         var exception = await Assert.ThrowsAsync<TaskCanceledException>(() =>
-            CreateTransport(handler).SendAsync<WhoAmI>(WhoAmIAt(AuthRequirement.None),
+            CreateTransport(handler).SendAsync<WhoAmIResponse>(WhoAmIAt(AuthRequirement.None),
                 TestContext.Current.CancellationToken, TimeSpan.FromMilliseconds(50)));
 
         Assert.IsType<TimeoutException>(exception.InnerException);
@@ -195,7 +193,7 @@ public class MatrixTransportTests
         cancellation.CancelAfter(TimeSpan.FromMilliseconds(50));
 
         var exception = await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
-            CreateTransport(handler).SendAsync<WhoAmI>(WhoAmIAt(AuthRequirement.None), cancellation.Token));
+            CreateTransport(handler).SendAsync<WhoAmIResponse>(WhoAmIAt(AuthRequirement.None), cancellation.Token));
 
         Assert.IsNotType<TimeoutException>(exception.InnerException);
     }
@@ -205,7 +203,7 @@ public class MatrixTransportTests
     {
         var handler = new DelayingHandler(TimeSpan.FromMilliseconds(200));
 
-        var response = await CreateTransport(handler).SendAsync<WhoAmI>(WhoAmIAt(AuthRequirement.None),
+        var response = await CreateTransport(handler).SendAsync<WhoAmIResponse>(WhoAmIAt(AuthRequirement.None),
             TestContext.Current.CancellationToken, Timeout.InfiniteTimeSpan);
 
         Assert.Equal("@a:example.org", response.UserId);
@@ -258,7 +256,7 @@ public class MatrixTransportTests
             $$"""{"errcode":"M_UNKNOWN_TOKEN","error":"Token expired","soft_logout":{{(softLogout ? "true" : "false")}}}""");
 
         var exception = await Assert.ThrowsAsync<MatrixUnknownTokenException>(() =>
-            CreateTransport(handler).SendAsync<WhoAmI>(WhoAmIAt(AuthRequirement.None), TestContext.Current.CancellationToken));
+            CreateTransport(handler).SendAsync<WhoAmIResponse>(WhoAmIAt(AuthRequirement.None), TestContext.Current.CancellationToken));
 
         Assert.Equal(softLogout, exception.SoftLogout);
         Assert.Equal("Token expired", exception.ServerMessage);
@@ -271,7 +269,7 @@ public class MatrixTransportTests
         var handler = new StubHttpMessageHandler(HttpStatusCode.Unauthorized, """{"errcode":"M_UNKNOWN_TOKEN"}""");
 
         var exception = await Assert.ThrowsAsync<MatrixUnknownTokenException>(() =>
-            CreateTransport(handler).SendAsync<WhoAmI>(WhoAmIAt(AuthRequirement.None), TestContext.Current.CancellationToken));
+            CreateTransport(handler).SendAsync<WhoAmIResponse>(WhoAmIAt(AuthRequirement.None), TestContext.Current.CancellationToken));
 
         Assert.False(exception.SoftLogout);
     }
@@ -282,7 +280,7 @@ public class MatrixTransportTests
         var handler = new StubHttpMessageHandler(HttpStatusCode.Unauthorized, """{"errcode":"M_UNKNOWN_TOKEN"}""");
 
         var exception = await Assert.ThrowsAsync<MatrixUnknownTokenException>(() =>
-            CreateTransport(handler, "secret").SendAsync<WhoAmI>(WhoAmIAt(AuthRequirement.Required), TestContext.Current.CancellationToken));
+            CreateTransport(handler, "secret").SendAsync<WhoAmIResponse>(WhoAmIAt(AuthRequirement.Required), TestContext.Current.CancellationToken));
 
         Assert.Equal("secret", exception.RejectedAccessToken);
     }
@@ -294,7 +292,7 @@ public class MatrixTransportTests
             """{"errcode":"M_USER_LOCKED","error":"This account has been locked","soft_logout":true}""");
 
         var exception = await Assert.ThrowsAsync<MatrixUserLockedException>(() =>
-            CreateTransport(handler).SendAsync<WhoAmI>(WhoAmIAt(AuthRequirement.None), TestContext.Current.CancellationToken));
+            CreateTransport(handler).SendAsync<WhoAmIResponse>(WhoAmIAt(AuthRequirement.None), TestContext.Current.CancellationToken));
 
         Assert.True(exception.SoftLogout);
         Assert.Equal(MatrixErrorCodes.UserLocked, exception.ErrorCode);
@@ -306,7 +304,7 @@ public class MatrixTransportTests
         var handler = new StubHttpMessageHandler(HttpStatusCode.Forbidden, """{"errcode":"M_USER_SUSPENDED"}""");
 
         var exception = await Assert.ThrowsAsync<MatrixException>(() =>
-            CreateTransport(handler).SendAsync<WhoAmI>(WhoAmIAt(AuthRequirement.None), TestContext.Current.CancellationToken));
+            CreateTransport(handler).SendAsync<WhoAmIResponse>(WhoAmIAt(AuthRequirement.None), TestContext.Current.CancellationToken));
 
         Assert.Equal(MatrixErrorCodes.UserSuspended, exception.ErrorCode);
     }
