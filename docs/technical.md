@@ -173,6 +173,9 @@ written twice. Adding `m.id.thirdparty` or `m.id.phone` means adding a class and
 - **`AotSmokeTests.PublishedApp_PassesItsChecks`** publishes `matrix.NET.AotSmoke` with Native
   AOT and runs it (D29). It is explicit: it needs clang and takes about 10 seconds from a cold
   start. Its homeserver checks run only against the local Synapse.
+- **`SourceRulesTests`** checks rules in the library's source that neither the compiler nor
+  other tests can see, such as not using `MatrixJsonContext.Default` (D31). It is explicit, as
+  its result only changes with the source; run it before releases and after larger changes.
 - **`SpecConformanceTests.Endpoints_MatchTheSpec`** compares every declared endpoint with the
   spec's OpenAPI definition (D26). It downloads the 2.5 MB definition, so it is explicit. Run
   it after adding endpoints and before releases. When the spec baseline changes, update its
@@ -339,7 +342,8 @@ relaxed (49 bytes): {"Body":"你好，世界 <b>hi</b> \uD83D\uDE00"}
   `JsonTypeInfo` is escaped as the app's options say.
 - `[JsonSourceGenerationOptions]` cannot set an encoder, so the library uses
   `MatrixJsonContext.Instance`, created with options that repeat the attribute's settings and
-  add the encoder. `MatrixJsonContext.Default` must not be used.
+  add the encoder. `MatrixJsonContext.Default` must not be used; using it would still produce
+  valid JSON, so the explicit `SourceRulesTests` scans the library's source for it.
 
 **Why:**
 
