@@ -99,7 +99,7 @@ internal sealed class MatrixTransport
         if (endpoint.HasParameters)
             throw new InvalidOperationException($"{endpoint} has path parameters that were not bound.");
 
-        var request = new HttpRequestMessage(endpoint.Method, new Uri(Homeserver, endpoint.Path));
+        var request = new HttpRequestMessage(endpoint.Method, new Uri(Homeserver, endpoint.PathAndQuery));
 
         if (bodyType is not null)
             request.Content = JsonContent.Create(body, JsonOptions.GetTypeInfo(bodyType));

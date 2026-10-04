@@ -18,6 +18,7 @@ namespace TeamBanana.MatrixDotNet.Transport;
 [JsonSerializable(typeof(LoginRequest))]
 [JsonSerializable(typeof(UserIdentifier))]
 [JsonSerializable(typeof(MatrixClient.RefreshRequest))]
+[JsonSerializable(typeof(MatrixClient.JoinRequest))]
 [JsonSerializable(typeof(MatrixClient.LeaveRequest))]
 // Event content: raw, and the modelled message types (through MessageContentConverter)
 [JsonSerializable(typeof(JsonObject))]
@@ -31,6 +32,7 @@ namespace TeamBanana.MatrixDotNet.Transport;
 [JsonSerializable(typeof(WhoAmIResponse))]
 [JsonSerializable(typeof(MatrixClient.RefreshResponse))]
 [JsonSerializable(typeof(MatrixClient.JoinedRoomsResponse))]
+[JsonSerializable(typeof(MatrixClient.JoinRoomResponse))]
 [JsonSerializable(typeof(MatrixClient.EmptyResponse))]
 [JsonSerializable(typeof(MatrixClient.SendEventResponse))]
 // Stored by apps; its property names are fixed by attributes, not by the naming policy

@@ -20,6 +20,24 @@ public class EndpointTests
     }
 
     [Fact]
+    public void WithQuery_EncodesAndRepeatsNames()
+    {
+        var endpoint = Template.Bind("!a:b", "m.x").WithQuery([("via", "a.example"), ("via", "b&c"), ("q", "x y")]);
+
+        Assert.Equal("via=a.example&via=b%26c&q=x%20y", endpoint.Query);
+        Assert.Equal(endpoint.Path + "?" + endpoint.Query, endpoint.PathAndQuery);
+    }
+
+    [Fact]
+    public void WithQuery_WithoutParametersChangesNothing()
+    {
+        var bound = Template.Bind("!a:b", "m.x");
+
+        Assert.Same(bound, bound.WithQuery([]));
+        Assert.Equal(bound.Path, bound.PathAndQuery);
+    }
+
+    [Fact]
     public void Bind_RejectsWrongNumberOfValues()
     {
         Assert.Throws<ArgumentException>(() => Template.Bind("!abc:example.org"));

@@ -42,7 +42,7 @@ and is not part of the repository.
 |---|---|
 | `MatrixServer` | Unauthenticated endpoints of a homeserver: supported login types, login and the shared endpoints |
 | `ServerOptions` | Options for `MatrixServer`: automatic decompression (D25) |
-| `MatrixClient` | Authenticated endpoints through a `MatrixSession`: `WhoAmIAsync`, `LogoutAsync`, `GetJoinedRoomsAsync`, `LeaveRoomAsync`, `SendMessageAsync`, `SendEventAsync` and the shared endpoints so far; lifecycle `State` and `SessionChanged` (D14, D21); automatic token refresh (D12) |
+| `MatrixClient` | Authenticated endpoints through a `MatrixSession`: `WhoAmIAsync`, `LogoutAsync`, `GetJoinedRoomsAsync`, `JoinRoomAsync`, `LeaveRoomAsync`, `SendMessageAsync`, `SendEventAsync` and the shared endpoints so far; lifecycle `State` and `SessionChanged` (D14, D21); automatic token refresh (D12) |
 | `ClientOptions` | Options for `MatrixClient`: automatic token refresh, refresh handler, automatic decompression |
 | `ISessionRefreshHandler` / `DiscardingSessionRefreshHandler` | Saves refreshed sessions before their tokens are used; the discarding one saves nothing (D23) |
 | `WhoAmIResponse` | Response of `GET /account/whoami` |
@@ -140,6 +140,9 @@ written twice. Adding `m.id.thirdparty` or `m.id.phone` means adding a class and
     skipped before logging in otherwise.
   - The script rewrites its overrides in `homeserver.yaml` on every start, so changes to them
     reach existing data directories.
+  - It also registers a second account, `matrixdotnet-other`, with the same password, written
+    as `OtherUser`, for tests that need someone else in a room, e.g. joining a room that must
+    stay alive while the test user is not in it.
 - **Your own homeserver is the remote target,** selected with `MATRIX_TEST_TARGET=remote`.
   It is configured in `matrix.NET.Tests/testsettings.json` (git-ignored; see
   `testsettings.example.json`), and its rate limits apply, so run it on demand rather than
@@ -294,9 +297,10 @@ cannot creep back in.
 
 - **Every library type is source-generated.** `Transport.MatrixJsonContext` lists each type
   the library serialises, with the snake_case naming policy and null omission as generation
-  options. The library uses its `Instance`, which adds relaxed escaping (D31). The transport resolves types only through it. A type missing from it fails at
-  runtime, which the endpoint's unit tests catch, so adding an endpoint means adding its
-  request and response types there too.
+  options. The library uses its `Instance`, which adds relaxed escaping (D31). The transport
+  resolves types only through it. A type missing from it fails at runtime, which the
+  endpoint's unit tests catch, so adding an endpoint means adding its request and response
+  types there too.
 - **Content supplied by the app has two overloads,** as `System.Net.Http.Json` does for
   `PostAsJsonAsync`:
   - a convenient one taking `TContent`, serialised by reflection with the library's naming
@@ -422,8 +426,8 @@ Rules for the constructor:
   again.
 - **The access token is not validated on creation.** The first real request reveals whether
   it is still valid: a rejected token is refreshed if possible (D12). Otherwise it throws
-  `MatrixUnknownTokenException` and raises the session-invalidated notification (D14). Apps that want an early check can call `whoami`
-  themselves.
+  `MatrixUnknownTokenException` and raises the session-invalidated notification (D14). Apps
+  that want an early check can call `whoami` themselves.
 - **Heavy start-up work belongs to an explicit start step.** For example, the future sync loop
   will be started with its own method, as matrix-js-sdk separates `createClient()` from
   `startClient()`.
@@ -1226,7 +1230,7 @@ Differences between homeserver versions fall into three kinds:
 | Kind | Example | Handling |
 |---|---|---|
 | Endpoint missing on older servers | Room summaries (v1.15) | Send the request; never refuse it up front. The endpoint declares the version that added it, so a failure gets a clear error and apps can ask in advance (below). No generic fallback. |
-| Library must choose between alternatives | Authenticated media (v1.11) vs legacy media; `via` vs `server_name` on `/join` | Detect up front from `/versions` |
+| Library must choose between alternatives | Authenticated media (v1.11) vs legacy media | Detect up front from `/versions` |
 | Fields added or removed in responses | New `/sync` fields in v1.16 | Nothing extra: optional fields are nullable, and unknown fields are ignored |
 
 **One feature table covers the first two kinds.** Each entry records the version that added
@@ -1295,7 +1299,8 @@ added, so each endpoint is declared exactly once and checked against the spec au
   other way to call one. Paths use the spec's parameter names, e.g. `{roomId}`.
   `Bind(...)` fills them in, in order, percent-encoding each value, so IDs such as
   `!abc:example.org` or `#alias:example.org` cannot change the path. The transport refuses an
-  endpoint whose parameters are not bound.
+  endpoint whose parameters are not bound. `WithQuery(...)` appends query parameters, encoded
+  the same way; a name may repeat, which is how the spec passes arrays.
 - **Every declaration states whether it needs a feature.** `Endpoint` has no public
   constructor, only two factories:
 
@@ -1361,6 +1366,12 @@ added, so each endpoint is declared exactly once and checked against the spec au
     server implements everything in each version it advertises.
 - **`.stable` flags count** because servers may ship a stable endpoint before advertising
   the spec version that contains it.
+- **Not every alternative needs detection.** `/join` replaced `server_name` with `via` in
+  v1.12 and removed `server_name` in v1.14, which looks like the second kind. But the spec
+  allows clients to "always include both parameters with identical values", and homeservers
+  "MUST ignore all `server_name` parameters if any `via` parameters are supplied". So
+  `JoinRoomAsync` sends both and needs no version detection. Prefer such a spec-sanctioned
+  form wherever one exists.
 - **No generic fallback for missing endpoints.** None of the SDKs researched has one, and
   matrix-js-sdk's per-call-site fallbacks carry Synapse-specific workarounds and expiry
   notes.

@@ -12,12 +12,13 @@ namespace TeamBanana.MatrixDotNet.Transport;
 /// </remarks>
 internal sealed partial class Endpoint
 {
-    private Endpoint(HttpMethod method, string path, AuthRequirement auth, MatrixFeature? feature)
+    private Endpoint(HttpMethod method, string path, AuthRequirement auth, MatrixFeature? feature, string query = "")
     {
         Method = method;
         Path = path;
         Auth = auth;
         Feature = feature;
+        Query = query;
     }
 
     public HttpMethod Method { get; }
@@ -28,6 +29,12 @@ internal sealed partial class Endpoint
     /// <see cref="Bind"/> fills them in.
     /// </summary>
     public string Path { get; }
+
+    /// <summary>The percent-encoded query string without the leading <c>?</c>; empty if there is none.</summary>
+    public string Query { get; }
+
+    /// <summary>The path and, if there is one, the query string, relative to the homeserver.</summary>
+    public string PathAndQuery => Query.Length == 0 ? Path : $"{Path}?{Query}";
 
     /// <summary>Whether <see cref="Path"/> still has parameters to fill in.</summary>
     public bool HasParameters => Parameter().IsMatch(Path);
@@ -69,10 +76,25 @@ internal sealed partial class Endpoint
                    path[(parameters[i].Index + parameters[i].Length)..];
         }
 
-        return new Endpoint(Method, path, Auth, Feature);
+        return new Endpoint(Method, path, Auth, Feature, Query);
     }
 
-    public override string ToString() => $"{Method} /{Path}";
+    /// <summary>
+    /// Returns this endpoint with <paramref name="parameters"/> appended to its query string, each name
+    /// and value percent-encoded. A name may repeat, which is how the spec passes arrays, e.g.
+    /// <c>via=a&amp;via=b</c>.
+    /// </summary>
+    public Endpoint WithQuery(IEnumerable<(string Name, string Value)> parameters)
+    {
+        var added = string.Join('&',
+            parameters.Select(p => $"{Uri.EscapeDataString(p.Name)}={Uri.EscapeDataString(p.Value)}"));
+        if (added.Length == 0)
+            return this;
+
+        return new Endpoint(Method, Path, Auth, Feature, Query.Length == 0 ? added : $"{Query}&{added}");
+    }
+
+    public override string ToString() => $"{Method} /{PathAndQuery}";
 
     [GeneratedRegex(@"\{[^}]+\}")]
     private static partial Regex Parameter();

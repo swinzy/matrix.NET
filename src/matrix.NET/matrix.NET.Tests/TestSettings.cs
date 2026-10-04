@@ -25,6 +25,12 @@ public class TestSettings
     /// </summary>
     public string? DeviceId { get; set; }
 
+    /// <summary>
+    /// Optional. A second account with the same password, for tests that need someone else in a
+    /// room. tools/synapse/synapse.sh creates it.
+    /// </summary>
+    public string? OtherUser { get; set; }
+
     /// <summary>Whether the tests target the local Synapse rather than your own homeserver.</summary>
     public bool IsLocal { get; private set; }
 

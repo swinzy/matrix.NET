@@ -167,6 +167,38 @@ public class MatrixClient : ISharedEndpoints
         (await InvokeAsync<JoinedRoomsResponse>(Endpoints.JoinedRooms, cancellationToken)).JoinedRooms;
 
     /// <summary>
+    /// Joins a room, or accepts an invitation to it.
+    /// </summary>
+    /// <param name="roomIdOrAlias">The room ID, e.g. <c>!abc:example.org</c>, or alias, e.g. <c>#room:example.org</c>.</param>
+    /// <param name="via">
+    /// Servers to join through, at least one of which must be in the room. Needed for a room ID the
+    /// homeserver does not know yet; servers taken from an alias or a link to the room are a good choice.
+    /// </param>
+    /// <param name="reason">Optional reason, shown to other members in the membership event.</param>
+    /// <param name="cancellationToken">Cancels the request.</param>
+    /// <returns>The ID of the joined room.</returns>
+    public Task<string> JoinRoomAsync(string roomIdOrAlias, IEnumerable<string>? via = null, string? reason = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(roomIdOrAlias);
+        var servers = via?.ToList() ?? [];
+        foreach (var server in servers)
+            ArgumentException.ThrowIfNullOrEmpty(server, nameof(via));
+
+        // via replaced server_name in v1.12, and server_name was removed in v1.14. The spec allows
+        // sending both with the same values: servers that know via must then ignore server_name,
+        // and older servers use server_name, so no version detection is needed (D26)
+        var endpoint = Endpoints.JoinRoom.Bind(roomIdOrAlias)
+            .WithQuery(servers.Select(s => ("via", s)).Concat(servers.Select(s => ("server_name", s))));
+        return JoinAsync();
+
+        async Task<string> JoinAsync() =>
+            (await InvokeAsync(endpoint,
+                ct => _transport.SendAsync<JoinRequest, JoinRoomResponse>(endpoint, new JoinRequest(reason), ct),
+                cancellationToken)).RoomId;
+    }
+
+    /// <summary>
     /// Leaves a room, or declines an invitation or withdraws a knock on it.
     /// </summary>
     /// <remarks>The room stays in the user's history until it is forgotten.</remarks>
@@ -528,6 +560,10 @@ public class MatrixClient : ISharedEndpoints
     internal record JoinedRoomsResponse(List<string> JoinedRooms);
 
     internal record LeaveRequest(string? Reason);
+
+    internal record JoinRequest(string? Reason);
+
+    internal record JoinRoomResponse(string RoomId);
 
     internal record RefreshRequest(string RefreshToken);
 

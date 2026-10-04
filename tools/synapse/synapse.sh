@@ -18,6 +18,8 @@ run_as=(--env UID=0 --env GID=0)
 image=docker.io/matrixdotorg/synapse
 port=8008
 user=matrixdotnet
+# A second account, for tests that need someone else in a room
+other_user=matrixdotnet-other
 settings_file=$repo_root/src/matrix.NET/matrix.NET.Tests/testsettings.local.json
 
 data_dir() { echo "$repo_root/.synapse/$1"; }
@@ -84,16 +86,19 @@ start() {
     wait_until_healthy
 
     # Fails harmlessly when the user already exists
-    podman exec "$container" register_new_matrix_user --config /data/homeserver.yaml \
-        --user "$user" --password "$(cat "$data/test-password")" --no-admin "http://localhost:8008" \
-        >/dev/null 2>&1 || true
+    for name in "$user" "$other_user"; do
+        podman exec "$container" register_new_matrix_user --config /data/homeserver.yaml \
+            --user "$name" --password "$(cat "$data/test-password")" --no-admin "http://localhost:8008" \
+            >/dev/null 2>&1 || true
+    done
 
     (umask 077 && cat >"$settings_file" <<EOF
 {
   "Homeserver": "http://127.0.0.1:$port/",
   "User": "$user",
   "Password": "$(cat "$data/test-password")",
-  "DeviceId": "MATRIXDOTNETTEST"
+  "DeviceId": "MATRIXDOTNETTEST",
+  "OtherUser": "$other_user"
 }
 EOF
     )
