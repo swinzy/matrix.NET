@@ -25,6 +25,7 @@ src/matrix.NET/
 ├── matrix.NET.sln
 ├── global.json                 # Opts dotnet test into Microsoft.Testing.Platform
 ├── matrix.NET/                 # The library (namespace TeamBanana.MatrixDotNet)
+├── matrix.NET.AotSmoke/        # Console app published with Native AOT by AotSmokeTests (D29)
 └── matrix.NET.Tests/           # xUnit v3 unit and integration tests
 tools/
 └── synapse/synapse.sh          # Local Synapse in podman for the integration tests
@@ -165,6 +166,9 @@ written twice. Adding `m.id.thirdparty` or `m.id.phone` means adding a class and
   - Run everything: `dotnet test --explicit on`.
 - The optional `DeviceId` setting makes the shared login reuse one device instead of
   creating a new one per run.
+- **`AotSmokeTests.PublishedApp_PassesItsChecks`** publishes `matrix.NET.AotSmoke` with Native
+  AOT and runs it (D29). It is explicit: it needs clang and takes about 10 seconds from a cold
+  start. Its homeserver checks run only against the local Synapse.
 - **`SpecConformanceTests.Endpoints_MatchTheSpec`** compares every declared endpoint with the
   spec's OpenAPI definition (D26). It downloads the 2.5 MB definition, so it is explicit. Run
   it after adding endpoints and before releases. When the spec baseline changes, update its
@@ -295,7 +299,15 @@ cannot creep back in.
     naming policy is the app's; it should be snake_case to follow Matrix conventions.
 - **Raw JSON content has its own overload taking `JsonObject`,** which needs no context and
   is AOT-safe, for apps that build or forward content as JSON.
-- Publishing an app with Native AOT is not tested yet; the analysers catch what they can.
+- **A Native AOT smoke test checks what the analysers cannot.** The analysers that run while
+  building the library see only its own calls. `matrix.NET.AotSmoke` is a console app published
+  with Native AOT and the library as a `TrimmerRootAssembly`, so ILLink analyses all of it as
+  an app's publish would, and any warning fails the publish. The native binary then runs the
+  serialisation paths: session round trips offline, and against the local Synapse login,
+  `whoami`, joined rooms, error responses, a real token refresh and logout.
+  `AotSmokeTests.PublishedApp_PassesItsChecks` publishes and runs it; it is explicit, as it
+  needs clang and compiles to native code. Run it before releases and after changing
+  serialisation.
 
 **Why:**
 
