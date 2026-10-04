@@ -63,6 +63,7 @@ and is not part of the repository.
 | `Transport.SharedEndpoints` (internal) | The single implementation of those endpoints |
 | `Compatibility.HomeserverQuirks` (internal) | Every tolerated deviation of a homeserver from the spec (D27) |
 | `MatrixVersion` | A comparable spec version; `Minimum` is v1.1 (D24) |
+| `TransactionId` | Creates transaction IDs for idempotent requests (D28) |
 | `MatrixFeature` | The features added after the minimum version, with the versions that added and removed them (D26) |
 | `Transport.Endpoint` / `Transport.Endpoints` (internal) | One declaration per endpoint: method, path, authentication and feature; the transport sends only these (D26) |
 
@@ -1318,6 +1319,56 @@ Entries so far:
   leave the client refreshing and failing on every request whenever another homeserver
   deviates differently. Ending the session costs a new login; missing a final failure costs
   a client stuck in a loop that survives restarts.
+
+### 3.4 Endpoint conventions
+
+Rules that apply to every endpoint of a kind, so each new endpoint follows them without a
+decision of its own.
+
+#### D28. Transaction IDs are optional, UUIDs, and fixed for the whole call (Decided)
+
+Endpoints that the spec makes idempotent with a `{txnId}` in the path, such as sending an
+event, take an optional `string? transactionId`:
+
+```csharp
+var result = await client.SendMessageAsync(roomId, content);                   // the library creates one
+var id = TransactionId.New();
+var result = await client.SendMessageAsync(roomId, content, transactionId: id);  // the app's own
+```
+
+- **The library creates one when none is given,** with `TransactionId.New()`: a version 4
+  UUID as 32 hexadecimal digits, as ruma does. It needs no counter, so instances and
+  processes cannot collide.
+- **The result reports the ID used,** so the app can match its own event when it comes back
+  through sync, by the event's `unsigned.transaction_id`.
+- **Apps that may need the ID after a failure create it first.** If a call throws, it returns
+  no result, so an ID the library created is lost. To retry safely after, e.g., a timeout, or
+  to show the message as pending before the call returns, the app passes its own ID. The XML
+  documentation of every such parameter says so.
+- **The ID is bound into the path before the call starts,** so the retry after a token refresh
+  (D12) sends the same path. This is not what prevents duplicates there, as the rejected
+  request was never executed, but it keeps one call to one ID.
+- **The parameter is named `transactionId` on every endpoint,** comes after the request's own
+  data, and the result carries it as `TransactionId`.
+
+**What the ID does and does not protect against.** The homeserver treats a request as a
+retransmission if the transaction ID and the path match an earlier one, and answers it with
+the earlier response. The scope of an ID is one device and one endpoint since v1.7; before
+v1.7 it was one access token. Synapse scopes by device since 1.90 (experimental from 1.87).
+On older servers, a retry with the same ID after a token refresh is treated as a new request,
+so a request that succeeded but whose response was lost would be executed twice. The library
+cannot prevent that.
+
+**Why:**
+
+- **Optional, as in matrix-js-sdk and matrix-rust-sdk.** Most calls never need the ID, so
+  requiring it would add a line to every send. Apps that do need it, for retries or local
+  echo, create it first.
+- **UUIDs rather than a timestamp and counter,** which the spec also recommends: a counter is
+  state that two instances or processes would have to share to avoid collisions.
+- **A static `TransactionId` class rather than a method on `MatrixClient`:** creating an ID
+  needs nothing from a client, and an app may need one before it has a client, e.g. to queue
+  a message while offline.
 
 ## 4. Pitfalls and limitations
 
