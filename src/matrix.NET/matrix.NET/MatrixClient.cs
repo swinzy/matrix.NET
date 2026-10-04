@@ -1,3 +1,7 @@
+using System.Diagnostics.CodeAnalysis;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using System.Text.Json.Serialization.Metadata;
 using TeamBanana.MatrixDotNet.Compatibility;
 using TeamBanana.MatrixDotNet.Transport;
 
@@ -176,6 +180,122 @@ public class MatrixClient : ISharedEndpoints
         return InvokeAsync(endpoint,
             ct => _transport.SendAsync<LeaveRequest, EmptyResponse>(endpoint, new LeaveRequest(reason), ct),
             cancellationToken);
+    }
+
+    /// <summary>
+    /// Sends a message (<c>m.room.message</c>) to a room.
+    /// </summary>
+    /// <param name="roomId">The room ID, e.g. <c>!abc:example.org</c>.</param>
+    /// <param name="content">The message, e.g. a <see cref="TextMessageContent"/>.</param>
+    /// <param name="transactionId">
+    /// Makes retries safe: the homeserver treats a request with the same ID as a repeat and does not
+    /// send the message twice. Omit it to have one created. Create it yourself with
+    /// <see cref="MatrixDotNet.TransactionId.New"/> if you may need it after a failure, to retry, or to
+    /// match the message when it comes back through sync (D28).
+    /// </param>
+    /// <param name="cancellationToken">Cancels the request.</param>
+    /// <exception cref="ArgumentException">
+    /// The content breaks the spec, e.g. it is an <see cref="InvalidMessageContent"/>.
+    /// </exception>
+    public Task<SendEventResult> SendMessageAsync(string roomId, MessageContent content, string? transactionId = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(content);
+        if (content.Validate() is { } error)
+            throw new ArgumentException($"The message is invalid: {error}", nameof(content));
+
+        return SendEventCoreAsync(roomId, "m.room.message",
+            JsonSerializer.SerializeToNode(content, MatrixJsonContext.Default.MessageContent), transactionId,
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// Sends an event of any type to a room, with content serialised by reflection using this library's
+    /// naming policy: snake_case, unless a property has <c>[JsonPropertyName]</c>, and nulls omitted.
+    /// </summary>
+    /// <remarks>
+    /// Trimmed and Native AOT apps should use the overload taking a <see cref="JsonTypeInfo{T}"/>, or the
+    /// one taking a <see cref="JsonObject"/>.
+    /// </remarks>
+    /// <param name="roomId">The room ID, e.g. <c>!abc:example.org</c>.</param>
+    /// <param name="eventType">The event type, e.g. <c>com.example.game.move</c>.</param>
+    /// <param name="content">The content; it must serialise to a JSON object.</param>
+    /// <param name="transactionId">
+    /// Makes retries safe; see <see cref="SendMessageAsync"/>. Omit it to have one created.
+    /// </param>
+    /// <param name="cancellationToken">Cancels the request.</param>
+    [RequiresUnreferencedCode(ReflectionJson.Message)]
+    [RequiresDynamicCode(ReflectionJson.Message)]
+    public Task<SendEventResult> SendEventAsync<TContent>(string roomId, string eventType, TContent content,
+        string? transactionId = null, CancellationToken cancellationToken = default) =>
+        SendEventAsync(roomId, eventType, content,
+            ReflectionJson.TypeInfo<TContent>(), transactionId, cancellationToken);
+
+    /// <summary>
+    /// Sends an event of any type to a room, with content serialised through
+    /// <paramref name="contentTypeInfo"/>, e.g. from your own source-generated
+    /// <see cref="System.Text.Json.Serialization.JsonSerializerContext"/>. Safe with trimming and Native AOT.
+    /// </summary>
+    /// <remarks>
+    /// The naming policy is your context's. Matrix uses snake_case, so set
+    /// <c>PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower</c> in its
+    /// <c>[JsonSourceGenerationOptions]</c>.
+    /// </remarks>
+    /// <param name="roomId">The room ID, e.g. <c>!abc:example.org</c>.</param>
+    /// <param name="eventType">The event type, e.g. <c>com.example.game.move</c>.</param>
+    /// <param name="content">The content; it must serialise to a JSON object.</param>
+    /// <param name="contentTypeInfo">Serialisation metadata for <typeparamref name="TContent"/>.</param>
+    /// <param name="transactionId">
+    /// Makes retries safe; see <see cref="SendMessageAsync"/>. Omit it to have one created.
+    /// </param>
+    /// <param name="cancellationToken">Cancels the request.</param>
+    public Task<SendEventResult> SendEventAsync<TContent>(string roomId, string eventType, TContent content,
+        JsonTypeInfo<TContent> contentTypeInfo, string? transactionId = null, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(contentTypeInfo);
+        return SendEventCoreAsync(roomId, eventType, JsonSerializer.SerializeToNode(content, contentTypeInfo),
+            transactionId, cancellationToken);
+    }
+
+    /// <summary>
+    /// Sends an event of any type to a room, with content given as JSON and sent unchanged. Safe with
+    /// trimming and Native AOT.
+    /// </summary>
+    /// <param name="roomId">The room ID, e.g. <c>!abc:example.org</c>.</param>
+    /// <param name="eventType">The event type, e.g. <c>com.example.game.move</c>.</param>
+    /// <param name="content">The content.</param>
+    /// <param name="transactionId">
+    /// Makes retries safe; see <see cref="SendMessageAsync"/>. Omit it to have one created.
+    /// </param>
+    /// <param name="cancellationToken">Cancels the request.</param>
+    public Task<SendEventResult> SendEventAsync(string roomId, string eventType, JsonObject content,
+        string? transactionId = null, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(content);
+        return SendEventCoreAsync(roomId, eventType, content, transactionId, cancellationToken);
+    }
+
+    private Task<SendEventResult> SendEventCoreAsync(string roomId, string eventType, JsonNode? content,
+        string? transactionId, CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(roomId);
+        ArgumentException.ThrowIfNullOrEmpty(eventType);
+        if (transactionId is not null)
+            ArgumentException.ThrowIfNullOrEmpty(transactionId);
+        if (content is not JsonObject json)
+            throw new ArgumentException("Event content must be a JSON object.", nameof(content));
+
+        // Bound once, so a retry after a token refresh reuses the same transaction ID (D28)
+        var id = transactionId ?? MatrixDotNet.TransactionId.New();
+        var endpoint = Endpoints.SendEvent.Bind(roomId, eventType, id);
+        return SendAsync();
+
+        async Task<SendEventResult> SendAsync()
+        {
+            var response = await InvokeAsync(endpoint,
+                ct => _transport.SendAsync<JsonObject, SendEventResponse>(endpoint, json, ct), cancellationToken);
+            return new SendEventResult(response.EventId, id);
+        }
     }
 
     /// <summary>
@@ -402,6 +522,8 @@ public class MatrixClient : ISharedEndpoints
     }
 
     internal record EmptyResponse;
+
+    internal record SendEventResponse(string EventId);
 
     internal record JoinedRoomsResponse(List<string> JoinedRooms);
 

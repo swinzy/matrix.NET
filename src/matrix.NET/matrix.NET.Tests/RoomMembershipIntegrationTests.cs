@@ -1,6 +1,3 @@
-using System.Net.Http.Headers;
-using System.Net.Http.Json;
-
 namespace TeamBanana.MatrixDotNet.Tests;
 
 /// <summary>
@@ -24,28 +21,13 @@ public class RoomMembershipIntegrationTests(LoggedInClientFixture fixture)
     [Fact]
     public async Task LeaveRoomAsync_RemovesTheRoomFromJoinedRooms()
     {
-        Assert.SkipUnless(fixture.Settings.IsLocal, "Creates rooms, which cannot be deleted; local Synapse only");
+        Assert.SkipUnless(fixture.Settings.IsLocal, TestRooms.LocalOnly);
         var client = await fixture.GetClientAsync();
-        var roomId = await CreateRoomAsync(client.Session);
+        var roomId = await TestRooms.CreateAsync(client.Session, Ct);
         Assert.Contains(roomId, await client.GetJoinedRoomsAsync(Ct));
 
         await client.LeaveRoomAsync(roomId, "matrix.NET leave test", Ct);
 
         Assert.DoesNotContain(roomId, await client.GetJoinedRoomsAsync(Ct));
-    }
-
-    // The library cannot create rooms yet, so this calls POST /createRoom directly
-    private static async Task<string> CreateRoomAsync(MatrixSession session)
-    {
-        using var http = new HttpClient();
-        using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(session.Homeserver, "_matrix/client/v3/createRoom"))
-        {
-            Content = JsonContent.Create(new { name = "matrix.NET test room" })
-        };
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", session.AccessToken);
-        using var response = await http.SendAsync(request, Ct);
-        response.EnsureSuccessStatusCode();
-        var body = await response.Content.ReadFromJsonAsync<Dictionary<string, string>>(Ct);
-        return body!["room_id"];
     }
 }

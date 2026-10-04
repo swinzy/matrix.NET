@@ -27,6 +27,10 @@ internal static class Endpoints
     public static readonly Endpoint JoinedRooms =
         Endpoint.Baseline(HttpMethod.Get, "_matrix/client/v3/joined_rooms", AuthRequirement.Required);
 
+    public static readonly Endpoint SendEvent =
+        Endpoint.Baseline(HttpMethod.Put, "_matrix/client/v3/rooms/{roomId}/send/{eventType}/{txnId}",
+            AuthRequirement.Required);
+
     public static readonly Endpoint LeaveRoom =
         Endpoint.Baseline(HttpMethod.Post, "_matrix/client/v3/rooms/{roomId}/leave", AuthRequirement.Required);
 }

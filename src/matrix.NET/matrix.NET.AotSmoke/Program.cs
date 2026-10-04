@@ -1,4 +1,8 @@
 using System.Net;
+using System.Net.Http.Headers;
+using System.Text;
+using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
 using TeamBanana.MatrixDotNet;
 
 // Exercises the library's serialisation paths in a Native AOT build. Offline checks always run;
@@ -111,6 +115,19 @@ if (client is not null)
         }
     });
 
+    await Check("send events", async () =>
+    {
+        var roomId = await CreateRoomAsync(client.Session);
+        var message = await client.SendMessageAsync(roomId, new TextMessageContent("matrix.NET AOT smoke test"));
+        var repeated = await client.SendMessageAsync(roomId, new TextMessageContent("matrix.NET AOT smoke test"),
+            message.TransactionId);
+        Require(repeated.EventId == message.EventId, "the repeated transaction created another event");
+        await client.SendEventAsync(roomId, "com.example.matrixdotnet.smoke", new JsonObject { ["n"] = 1 });
+        await client.SendEventAsync(roomId, "com.example.matrixdotnet.smoke", new SmokeContent("typed"),
+            SmokeJsonContext.Default.SmokeContent);
+        await client.LeaveRoomAsync(roomId);
+    });
+
     await Check("token refresh", async () =>
     {
         var expiresAt = client.Session.ExpiresAt ?? throw new InvalidOperationException("token does not expire");
@@ -123,6 +140,27 @@ if (client is not null)
 }
 
 return failures == 0 ? 0 : 1;
+
+// The library cannot create rooms yet
+static async Task<string> CreateRoomAsync(MatrixSession session)
+{
+    using var http = new HttpClient();
+    using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(session.Homeserver, "_matrix/client/v3/createRoom"))
+    {
+        Content = new StringContent("{}", Encoding.UTF8, "application/json")
+    };
+    request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", session.AccessToken);
+    using var response = await http.SendAsync(request);
+    response.EnsureSuccessStatusCode();
+    var body = JsonNode.Parse(await response.Content.ReadAsStringAsync())!;
+    return body["room_id"]!.GetValue<string>();
+}
+
+record SmokeContent(string Label);
+
+[JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower)]
+[JsonSerializable(typeof(SmokeContent))]
+partial class SmokeJsonContext : JsonSerializerContext;
 
 sealed class CountingHandler(Action onRefreshed) : ISessionRefreshHandler
 {

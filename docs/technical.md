@@ -42,7 +42,7 @@ and is not part of the repository.
 |---|---|
 | `MatrixServer` | Unauthenticated endpoints of a homeserver: supported login types, login and the shared endpoints |
 | `ServerOptions` | Options for `MatrixServer`: automatic decompression (D25) |
-| `MatrixClient` | Authenticated endpoints through a `MatrixSession`: `WhoAmIAsync`, `LogoutAsync`, `GetJoinedRoomsAsync`, `LeaveRoomAsync` and the shared endpoints so far; lifecycle `State` and `SessionChanged` (D14, D21); automatic token refresh (D12) |
+| `MatrixClient` | Authenticated endpoints through a `MatrixSession`: `WhoAmIAsync`, `LogoutAsync`, `GetJoinedRoomsAsync`, `LeaveRoomAsync`, `SendMessageAsync`, `SendEventAsync` and the shared endpoints so far; lifecycle `State` and `SessionChanged` (D14, D21); automatic token refresh (D12) |
 | `ClientOptions` | Options for `MatrixClient`: automatic token refresh, refresh handler, automatic decompression |
 | `ISessionRefreshHandler` / `DiscardingSessionRefreshHandler` | Saves refreshed sessions before their tokens are used; the discarding one saves nothing (D23) |
 | `WhoAmIResponse` | Response of `GET /account/whoami` |
@@ -66,6 +66,10 @@ and is not part of the repository.
 | `Compatibility.HomeserverQuirks` (internal) | Every tolerated deviation of a homeserver from the spec (D27) |
 | `MatrixVersion` | A comparable spec version; `Minimum` is v1.1 (D24) |
 | `TransactionId` | Creates transaction IDs for idempotent requests (D28) |
+| `SendEventResult` | Event ID and transaction ID of a sent event (D28) |
+| `MessageContent` and subclasses | `m.room.message` content: `TextMessageContent`, `UnknownMessageContent`, `InvalidMessageContent` (D30) |
+| `Transport.MessageContentConverter` (internal) | Reads and writes `MessageContent` by `msgtype` without losing data (D30) |
+| `Transport.ReflectionJson` (internal) | Reflection-based options for app content, used only by the overloads marked as needing it (D29) |
 | `MatrixFeature` | The features added after the minimum version, with the versions that added and removed them (D26) |
 | `Transport.Endpoint` / `Transport.Endpoints` (internal) | One declaration per endpoint: method, path, authentication and feature; the transport sends only these (D26) |
 
@@ -1414,6 +1418,52 @@ cannot prevent that.
   needs nothing from a client, and an app may need one before it has a client, e.g. to queue
   a message while offline.
 
+#### D30. Event content is typed where modelled and kept whole where not (Decided)
+
+Sending has two layers:
+
+- **`SendEventAsync`** sends any event type, with the three content overloads of D29:
+  reflection with the library's naming policy, the app's `JsonTypeInfo`, or a `JsonObject`.
+  Content must serialise to a JSON object; anything else is refused before sending.
+- **`SendMessageAsync`** sends `m.room.message` with a typed `MessageContent`.
+
+`MessageContent` is an abstract class with one subclass per modelled `msgtype`, so far
+`TextMessageContent`, and two that keep everything else:
+
+| Type | When | Holds |
+|---|---|---|
+| A modelled type, e.g. `TextMessageContent` | Known `msgtype`, valid content | Typed fields, plus unmodelled fields such as `m.relates_to` in `AdditionalProperties` |
+| `UnknownMessageContent` | `msgtype` the library does not model | `MsgType`, `Body` and the whole content as a `JsonObject` |
+| `InvalidMessageContent` | Breaks the spec: no `msgtype`, a known type without a textual `body`, wrong field types, `format` without `formatted_body` | The claimed `MsgType`, `Body` if there is one, the whole content and the reason |
+
+- **The hierarchy is closed** (a `private protected` constructor). Apps send `msgtype`s the
+  library does not model with `SendEventAsync`.
+- **`Body` is always available,** empty if the content has none, because the spec asks
+  clients to show it for a `msgtype` they cannot display.
+- **Reading and writing go through `MessageContentConverter`.** It reads the content as a
+  `JsonObject`, finds `msgtype` wherever it is, and looks it up in one table, the only place
+  a new `msgtype` is added. Known types are read with their own source-generated metadata,
+  and any failure becomes `InvalidMessageContent`. Writing puts `msgtype` first and `body`
+  next; unknown and invalid content is written back unchanged.
+- **Sending validates first.** `SendMessageAsync` refuses content that breaks the spec,
+  including any `InvalidMessageContent`, and sends `UnknownMessageContent` unchanged.
+
+**Why:**
+
+- **System.Text.Json's built-in polymorphism does not fit.** Checked on .NET 10:
+  - a discriminator that is not the first property fails unless out-of-order metadata is
+    allowed, which buffers every polymorphic object;
+  - an unknown discriminator throws;
+  - with `IgnoreUnrecognizedTypeDiscriminators`, unknown content falls back to the base type
+    but loses the `msgtype`, so it is changed when written back.
+- **One malformed or unfamiliar event must not break the rest.** Reading a sync response will
+  deserialise many events; throwing on one would lose them all.
+- **Nothing is lost in a round trip,** so content can be read, edited and sent again, or
+  forwarded, without dropping fields this library or the reader does not know.
+- **Invalid is separate from unknown,** so an app can tell "a newer kind of message" from
+  "a broken message", and log or report the latter.
+- The same pattern will serve events themselves in sync, discriminated by `type`.
+
 ## 4. Pitfalls and limitations
 
 ### Pitfalls
@@ -1433,6 +1483,9 @@ cannot prevent that.
   set to its type's default, not left at `value`, unlike reflection-based serialisation.
   Avoid initialisers on init-only properties of deserialised types, or handle the missing
   field explicitly, as `MatrixSession.FromJson` does for `format_version`.
+- **`[JsonIgnore]` is not inherited by overrides.** An `override` of a property that is
+  `[JsonIgnore]`d in the base class is serialised unless it has `[JsonIgnore]` itself, as
+  `TextMessageContent.MsgType` does.
 - **Polymorphic discriminator clash.** A property that serialises to the discriminator name
   (`type`) must be `[JsonIgnore]`d, or System.Text.Json fails.
 - **`IHttpClientFactory` shares handlers.** Never put per-account state in a

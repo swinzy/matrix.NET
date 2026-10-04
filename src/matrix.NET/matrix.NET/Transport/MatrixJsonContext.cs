@@ -1,3 +1,4 @@
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 
 namespace TeamBanana.MatrixDotNet.Transport;
@@ -16,6 +17,10 @@ namespace TeamBanana.MatrixDotNet.Transport;
 [JsonSerializable(typeof(UserIdentifier))]
 [JsonSerializable(typeof(MatrixClient.RefreshRequest))]
 [JsonSerializable(typeof(MatrixClient.LeaveRequest))]
+// Event content: raw, and the modelled message types (through MessageContentConverter)
+[JsonSerializable(typeof(JsonObject))]
+[JsonSerializable(typeof(MessageContent))]
+[JsonSerializable(typeof(TextMessageContent))]
 // Responses
 [JsonSerializable(typeof(MatrixTransport.ErrorResponse))]
 [JsonSerializable(typeof(MatrixServer.LoginFlowsResponse))]
@@ -25,6 +30,7 @@ namespace TeamBanana.MatrixDotNet.Transport;
 [JsonSerializable(typeof(MatrixClient.RefreshResponse))]
 [JsonSerializable(typeof(MatrixClient.JoinedRoomsResponse))]
 [JsonSerializable(typeof(MatrixClient.EmptyResponse))]
+[JsonSerializable(typeof(MatrixClient.SendEventResponse))]
 // Stored by apps; its property names are fixed by attributes, not by the naming policy
 [JsonSerializable(typeof(MatrixSession))]
 internal sealed partial class MatrixJsonContext : JsonSerializerContext;
