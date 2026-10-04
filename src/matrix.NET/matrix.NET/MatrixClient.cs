@@ -156,6 +156,29 @@ public class MatrixClient : ISharedEndpoints
         InvokeAsync<WhoAmIResponse>(Endpoints.WhoAmI, cancellationToken);
 
     /// <summary>
+    /// Gets the IDs of the rooms the user has joined.
+    /// </summary>
+    /// <param name="cancellationToken">Cancels the request.</param>
+    public async Task<List<string>> GetJoinedRoomsAsync(CancellationToken cancellationToken = default) =>
+        (await InvokeAsync<JoinedRoomsResponse>(Endpoints.JoinedRooms, cancellationToken)).JoinedRooms;
+
+    /// <summary>
+    /// Leaves a room, or declines an invitation or withdraws a knock on it.
+    /// </summary>
+    /// <remarks>The room stays in the user's history until it is forgotten.</remarks>
+    /// <param name="roomId">The room ID, e.g. <c>!abc:example.org</c>.</param>
+    /// <param name="reason">Optional reason, shown to other members in the membership event.</param>
+    /// <param name="cancellationToken">Cancels the request.</param>
+    public Task LeaveRoomAsync(string roomId, string? reason = null, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(roomId);
+        var endpoint = Endpoints.LeaveRoom.Bind(roomId);
+        return InvokeAsync(endpoint,
+            ct => _transport.SendAsync<LeaveRequest, EmptyResponse>(endpoint, new LeaveRequest(reason), ct),
+            cancellationToken);
+    }
+
+    /// <summary>
     /// Logs out, invalidating the session's tokens and device on the homeserver. Afterwards the
     /// client is unusable; only <see cref="UserId"/> and <see cref="DeviceId"/> remain readable.
     /// </summary>
@@ -379,6 +402,10 @@ public class MatrixClient : ISharedEndpoints
     }
 
     private record EmptyResponse;
+
+    private record JoinedRoomsResponse(List<string> JoinedRooms);
+
+    private record LeaveRequest(string? Reason);
 
     private record RefreshRequest(string RefreshToken);
 

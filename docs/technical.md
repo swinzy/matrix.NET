@@ -41,7 +41,7 @@ and is not part of the repository.
 |---|---|
 | `MatrixServer` | Unauthenticated endpoints of a homeserver: supported login types, login and the shared endpoints |
 | `ServerOptions` | Options for `MatrixServer`: automatic decompression (D25) |
-| `MatrixClient` | Authenticated endpoints through a `MatrixSession`: `WhoAmIAsync`, `LogoutAsync` and the shared endpoints so far; lifecycle `State` and `SessionChanged` (D14, D21); automatic token refresh (D12) |
+| `MatrixClient` | Authenticated endpoints through a `MatrixSession`: `WhoAmIAsync`, `LogoutAsync`, `GetJoinedRoomsAsync`, `LeaveRoomAsync` and the shared endpoints so far; lifecycle `State` and `SessionChanged` (D14, D21); automatic token refresh (D12) |
 | `ClientOptions` | Options for `MatrixClient`: automatic token refresh, refresh handler, automatic decompression |
 | `ISessionRefreshHandler` / `DiscardingSessionRefreshHandler` | Saves refreshed sessions before their tokens are used; the discarding one saves nothing (D23) |
 | `WhoAmIResponse` | Response of `GET /account/whoami` |
@@ -148,6 +148,9 @@ written twice. Adding `m.id.thirdparty` or `m.id.phone` means adding a class and
   second run needs to wait about 5.5 minutes for the third. After that, each run needs
   about 17 minutes to earn its 3 back. Logins by other clients of the same account or IP
   address use the same allowance.
+- **Tests that leave data behind for good run only against the local Synapse,** e.g. rooms
+  they create, which cannot be deleted. They check `TestSettings.IsLocal` and are skipped
+  otherwise, before sending anything.
 - **A run logs in once for all tests that share a session.** `LoggedInClientFixture` is an
   xUnit assembly fixture that logs in lazily, on the first test asking for a client. A failed
   login is cached, so it is not retried by every test. Tests that test login or logout
@@ -1209,6 +1212,9 @@ added, so each endpoint is declared exactly once and checked against the spec au
 - **Every endpoint is an internal `Endpoint`** in `Transport.Endpoints`, holding its method,
   path, `AuthRequirement` and feature. The transport sends only `Endpoint`s, so there is no
   other way to call one. Paths use the spec's parameter names, e.g. `{roomId}`.
+  `Bind(...)` fills them in, in order, percent-encoding each value, so IDs such as
+  `!abc:example.org` or `#alias:example.org` cannot change the path. The transport refuses an
+  endpoint whose parameters are not bound.
 - **Every declaration states whether it needs a feature.** `Endpoint` has no public
   constructor, only two factories:
 

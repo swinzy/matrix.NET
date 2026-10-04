@@ -28,8 +28,9 @@ adds the rest of what it requires of Web, Desktop and Mobile clients.
 - [x] Refreshing access tokens (`POST /refresh`), automatic by default
 - [ ] Transaction identifiers for idempotent sends
 - [ ] Sync: initial and incremental (`GET /sync` with `since` and `timeout`)
-- [ ] List joined rooms (`GET /joined_rooms`)
-- [ ] Join and leave rooms (`POST /join/{roomIdOrAlias}`, `POST /rooms/{roomId}/leave`)
+- [x] List joined rooms (`GET /joined_rooms`)
+- [ ] Join rooms (`POST /join/{roomIdOrAlias}`)
+- [x] Leave rooms (`POST /rooms/{roomId}/leave`)
 - [ ] Send text messages (`PUT /rooms/{roomId}/send/m.room.message/{txnId}`, `m.text`)
 - [ ] Read timeline events from sync (`m.room.message`)
 
