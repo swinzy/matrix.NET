@@ -126,6 +126,13 @@ written twice. Adding `m.id.thirdparty` or `m.id.phone` means adding a class and
     from empty data.
   - The tests read `testsettings.local.json` where the script writes it, so switching
     versions needs no rebuild.
+  - Access tokens issued with a refresh token expire after 2 seconds
+    (`refreshable_access_token_lifetime`), so `RefreshIntegrationTests` can wait for a real
+    expiry and check the automatic refresh end to end. Logins without a refresh token, such
+    as the shared one, never expire. That test only runs against the local Synapse, and is
+    skipped before logging in otherwise.
+  - The script rewrites its overrides in `homeserver.yaml` on every start, so changes to them
+    reach existing data directories.
 - **Your own homeserver is the remote target,** selected with `MATRIX_TEST_TARGET=remote`.
   It is configured in `matrix.NET.Tests/testsettings.json` (git-ignored; see
   `testsettings.example.json`), and its rate limits apply, so run it on demand rather than

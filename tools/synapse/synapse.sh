@@ -26,12 +26,12 @@ stop() {
     podman rm --force --ignore "$container" >/dev/null
 }
 
-# Appended once to the generated homeserver.yaml. Older versions ignore options they do not know.
+# Appended to the generated homeserver.yaml, replacing any earlier copy so that existing data
+# directories pick up changes. Older versions ignore options they do not know.
 write_overrides() {
     local config=$1
-    grep -q '^# matrix.NET test overrides' "$config" && return
+    sed -i '/^# matrix.NET test overrides/,$d' "$config"
     {
-        echo
         echo '# matrix.NET test overrides'
         local unlimited='{per_second: 1000000, burst_count: 1000000}'
         for option in rc_message rc_registration rc_registration_token_validity rc_admin_redaction \
@@ -43,6 +43,8 @@ write_overrides() {
         echo "rc_joins: {local: $unlimited, remote: $unlimited}"
         echo "rc_invites: {per_room: $unlimited, per_user: $unlimited, per_issuer: $unlimited}"
         echo "rc_presence: {per_user: $unlimited}"
+        # Short enough for tests to wait for expiry; logins without refresh tokens never expire
+        echo "refreshable_access_token_lifetime: 2s"
     } >>"$config"
 }
 

@@ -25,6 +25,9 @@ public class TestSettings
     /// </summary>
     public string? DeviceId { get; set; }
 
+    /// <summary>Whether the tests target the local Synapse rather than your own homeserver.</summary>
+    public bool IsLocal { get; private set; }
+
     public bool IsConfigured =>
         !string.IsNullOrEmpty(Homeserver) && !string.IsNullOrEmpty(User) && !string.IsNullOrEmpty(Password);
 
@@ -32,15 +35,18 @@ public class TestSettings
     {
         // The local file is read where the script writes it, not copied to the output, so restarting
         // Synapse with another version takes effect without a rebuild
-        var file = Environment.GetEnvironmentVariable("MATRIX_TEST_TARGET")?.ToLowerInvariant() switch
+        var isLocal = Environment.GetEnvironmentVariable("MATRIX_TEST_TARGET")?.ToLowerInvariant() switch
         {
-            null or "" or "local" => FindUpwards("testsettings.local.json"),
-            "remote" => Path.Combine(AppContext.BaseDirectory, "testsettings.json"),
+            null or "" or "local" => true,
+            "remote" => false,
             var target => throw new InvalidOperationException(
                 $"MATRIX_TEST_TARGET must be 'local' or 'remote', not '{target}'.")
         };
+        var file = isLocal
+            ? FindUpwards("testsettings.local.json")
+            : Path.Combine(AppContext.BaseDirectory, "testsettings.json");
 
-        var settings = new TestSettings();
+        var settings = new TestSettings { IsLocal = isLocal };
         var builder = new ConfigurationBuilder();
         if (file is not null)
             builder.AddJsonFile(file, optional: true);
