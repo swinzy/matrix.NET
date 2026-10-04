@@ -42,7 +42,7 @@ and is not part of the repository.
 |---|---|
 | `MatrixServer` | Unauthenticated endpoints of a homeserver: supported login types, login and the shared endpoints |
 | `ServerOptions` | Options for `MatrixServer`: automatic decompression (D25) |
-| `MatrixClient` | Authenticated endpoints through a `MatrixSession`: `WhoAmIAsync`, `LogoutAsync`, `GetJoinedRoomsAsync`, `JoinRoomAsync`, `LeaveRoomAsync`, `SendMessageAsync`, `SendEventAsync` and the shared endpoints so far; lifecycle `State` and `SessionChanged` (D14, D21); automatic token refresh (D12) |
+| `MatrixClient` | Authenticated endpoints through a `MatrixSession`: `WhoAmIAsync`, `LogoutAsync`, `SyncAsync`, `GetJoinedRoomsAsync`, `JoinRoomAsync`, `LeaveRoomAsync`, `SendMessageAsync`, `SendEventAsync` and the shared endpoints so far; lifecycle `State` and `SessionChanged` (D14, D21); automatic token refresh (D12) |
 | `ClientOptions` | Options for `MatrixClient`: automatic token refresh, refresh handler, automatic decompression |
 | `ISessionRefreshHandler` / `DiscardingSessionRefreshHandler` | Saves refreshed sessions before their tokens are used; the discarding one saves nothing (D23) |
 | `WhoAmIResponse` | Response of `GET /account/whoami` |
@@ -69,6 +69,9 @@ and is not part of the repository.
 | `SendEventResult` | Event ID and transaction ID of a sent event (D28) |
 | `MessageContent` and subclasses | `m.room.message` content: `TextMessageContent`, `UnknownMessageContent`, `InvalidMessageContent` (D30) |
 | `Transport.MessageContentConverter` (internal) | Reads and writes `MessageContent` by `msgtype` without losing data (D30) |
+| `SyncRequest` / `SyncResponse` and its parts | Parameters and result of `SyncAsync`; room timelines modelled, the rest kept (D32) |
+| `RoomEvent` and subclasses | Timeline events: `MessageEvent`, `EncryptedEvent`, `RedactionEvent`, `RedactedRoomEvent`, `UnknownRoomEvent`, `InvalidRoomEvent` (D32) |
+| `Transport.RoomEventConverter` (internal) | Reads and writes `RoomEvent` by `type` without losing data (D32) |
 | `Transport.ReflectionJson` (internal) | Reflection-based options for app content, used only by the overloads marked as needing it (D29) |
 | `MatrixFeature` | The features added after the minimum version, with the versions that added and removed them (D26) |
 | `Transport.Endpoint` / `Transport.Endpoints` (internal) | One declaration per endpoint: method, path, authentication and feature; the transport sends only these (D26) |
@@ -1507,6 +1510,59 @@ Sending has two layers:
   "a broken message", and log or report the latter.
 - The same pattern will serve events themselves in sync, discriminated by `type`.
 
+#### D32. Sync is an endpoint first; its response is modelled where needed and kept whole elsewhere (Decided)
+
+`MatrixClient.SyncAsync(SyncRequest?)` sends one `GET /sync` and returns a `SyncResponse`. It is
+an ordinary endpoint (D20): apps that only want the endpoint layer write their own loop around
+it. A sync loop component, built on it, is a separate design (D21).
+
+- **Parameters are an object,** `SyncRequest`, with `Since`, `Timeout`, `Filter` and
+  `FullState`. `/sync` keeps gaining parameters (e.g. `use_state_after` in v1.16), and adding a
+  property to an object breaks nothing, while adding a method parameter breaks binary
+  compatibility.
+- **The local timeout is the long-poll timeout plus 30 seconds,** so the homeserver can hold
+  the request for its whole timeout and still answer.
+- **Only room timelines are modelled:** `Rooms.Join` and `Rooms.Leave`, each room's `Timeline`
+  (`Events`, `Limited`, `PrevBatch`). Every other part, such as `account_data`, `presence`,
+  `to_device`, room `state`, invites and knocks, is kept in `AdditionalProperties`, so nothing
+  is lost and modelling it later adds properties without breaking anything.
+
+**Events** follow D30, discriminated by `type`. `RoomEvent` is an abstract base with the
+fields every event has: `EventId`, `Type`, `Sender`, `OriginServerTs`, `StateKey`, `Unsigned`
+(with `TransactionId` and `Age` modelled) and `AdditionalProperties`. Only
+`RoomEventConverter` creates events.
+
+| Type | When | Holds |
+|---|---|---|
+| `MessageEvent` | `m.room.message` | `Content` as a `MessageContent` (D30) |
+| `EncryptedEvent` | `m.room.encrypted` | `Algorithm` and the content: recognised, but cannot be read yet |
+| `RedactionEvent` | `m.room.redaction` | `Redacts`, from `content.redacts` (room versions 11 and later) or the top-level `redacts` (1 to 10), and `Reason` |
+| `RedactedRoomEvent` | Any event with `unsigned.redacted_because` | What is left of the content; keeps the original `Type` |
+| `UnknownRoomEvent` | Any other type, including unmodelled state events | The content as a `JsonObject` |
+| `InvalidRoomEvent` | No `type`, `event_id`, `sender`, numeric `origin_server_ts` or content object, a non-string `state_key`, unreadable `unsigned`, or a redaction without `redacts` | The whole event and the reason |
+
+- **`StateKey` is on the base class,** with `IsState`, rather than a separate `StateEvent`
+  class. Unknown, redacted and invalid events can each be state or not; a separate class
+  would double them. Modelled state events, such as a future `MemberEvent`, derive from
+  `RoomEvent` directly.
+- **Redactions have two types.** An event redacted before the app sees it arrives as a
+  `RedactedRoomEvent`. An event the app has already seen is redacted by a later
+  `RedactionEvent`, which tells the app to hide it; the original is not sent again.
+- **Encrypted events are recognised although they cannot be decrypted** (end-to-end
+  encryption is a Should Have). Apps can show them as encrypted messages instead of telling
+  them apart from unknown events themselves. The type stays useful once decryption exists,
+  as some events will still be undecryptable, e.g. for want of keys.
+- Events round-trip: writing one back produces the same JSON, apart from the order of fields.
+
+**Why:**
+
+- **Endpoint first:** it completes reading messages for endpoint-layer users now, and is what
+  a sync loop needs anyway.
+- **Partial modelling with nothing lost:** the full `/sync` response is large, and most of it
+  is not needed to read messages. Keeping the rest whole avoids both a big model nobody uses
+  yet and silently dropped data.
+- **One malformed or unfamiliar event must not break a sync response,** as in D30.
+
 ## 4. Pitfalls and limitations
 
 ### Pitfalls
@@ -1529,6 +1585,14 @@ Sending has two layers:
 - **`[JsonIgnore]` is not inherited by overrides.** An `override` of a property that is
   `[JsonIgnore]`d in the base class is serialised unless it has `[JsonIgnore]` itself, as
   `TextMessageContent.MsgType` does.
+- **Homeservers cache sync responses.** Synapse answers a `/sync` identical to one from the
+  last two minutes (`sync_response_cache_duration`) with the cached response; the key covers
+  the user, device, `since`, `timeout`, filter and `full_state`. Repeating an initial sync can
+  therefore return stale data, and a test that repeats a request may see an earlier run's
+  answer. Continue from `next_batch`, and make test requests differ, e.g. with a unique filter.
+- **Long polls end on device list changes.** Logging another device of the account in or out
+  ends a waiting `/sync`, and no filter excludes it, so the long-poll test runs without other
+  tests in parallel.
 - **Polymorphic discriminator clash.** A property that serialises to the discriminator name
   (`type`) must be `[JsonIgnore]`d, or System.Text.Json fails.
 - **`IHttpClientFactory` shares handlers.** Never put per-account state in a
@@ -1553,6 +1617,9 @@ Sending has two layers:
   cached, and there is no cache lifetime option, no minimum version check, no
   `SupportsAsync` and no explanation of missing endpoints.
 - Only `m.id.user` identifiers are supported.
+- Encrypted rooms cannot be read: every message in them is an `EncryptedEvent` until
+  end-to-end encryption is implemented.
+- `/sync` models only room timelines (D32); there is no sync loop yet.
 - XML documentation is generated and shipped, so IDEs show it. Warning CS1591, for missing
   documentation, is silenced until all public members are documented.
 - Rate-limit details (`retry_after_ms`) are not exposed.

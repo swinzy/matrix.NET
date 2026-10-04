@@ -115,7 +115,7 @@ if (client is not null)
         }
     });
 
-    await Check("send events", async () =>
+    await Check("send and sync events", async () =>
     {
         var roomId = await CreateRoomAsync(client.Session);
         var message = await client.SendMessageAsync(roomId, new TextMessageContent("matrix.NET AOT smoke test"));
@@ -125,6 +125,16 @@ if (client is not null)
         await client.SendEventAsync(roomId, "com.example.matrixdotnet.smoke", new JsonObject { ["n"] = 1 });
         await client.SendEventAsync(roomId, "com.example.matrixdotnet.smoke", new SmokeContent("typed"),
             SmokeJsonContext.Default.SmokeContent);
+
+        // Reads every event kind back through the converters
+        var filter = """{"room":{"rooms":[""" + $"\"{roomId}\"" + """],"timeline":{"limit":50}}}""";
+        var events = (await client.SyncAsync(new SyncRequest { Filter = filter })).Rooms?.Join?[roomId].Timeline?.Events ?? [];
+        Require(events.OfType<MessageEvent>().Any(e => e.EventId == message.EventId &&
+                                                       e.Unsigned?.TransactionId == message.TransactionId),
+            "the message did not come back through sync");
+        Require(events.OfType<UnknownRoomEvent>().Any(e => e.Type == "com.example.matrixdotnet.smoke"),
+            "the custom event did not come back through sync");
+        Require(!events.OfType<InvalidRoomEvent>().Any(), "sync returned invalid events");
         await client.LeaveRoomAsync(roomId);
     });
 

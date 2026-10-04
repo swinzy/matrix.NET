@@ -35,6 +35,10 @@ namespace TeamBanana.MatrixDotNet.Transport;
 [JsonSerializable(typeof(MatrixClient.JoinRoomResponse))]
 [JsonSerializable(typeof(MatrixClient.EmptyResponse))]
 [JsonSerializable(typeof(MatrixClient.SendEventResponse))]
+[JsonSerializable(typeof(SyncResponse))]
+// Events (through RoomEventConverter)
+[JsonSerializable(typeof(RoomEvent))]
+[JsonSerializable(typeof(EventUnsigned))]
 // Stored by apps; its property names are fixed by attributes, not by the naming policy
 [JsonSerializable(typeof(MatrixSession))]
 internal sealed partial class MatrixJsonContext : JsonSerializerContext

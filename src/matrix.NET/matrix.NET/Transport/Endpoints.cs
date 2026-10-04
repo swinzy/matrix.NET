@@ -24,6 +24,9 @@ internal static class Endpoints
     public static readonly Endpoint Logout =
         Endpoint.Baseline(HttpMethod.Post, "_matrix/client/v3/logout", AuthRequirement.Required);
 
+    public static readonly Endpoint Sync =
+        Endpoint.Baseline(HttpMethod.Get, "_matrix/client/v3/sync", AuthRequirement.Required);
+
     public static readonly Endpoint JoinedRooms =
         Endpoint.Baseline(HttpMethod.Get, "_matrix/client/v3/joined_rooms", AuthRequirement.Required);
 

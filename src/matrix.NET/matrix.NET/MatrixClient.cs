@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization.Metadata;
@@ -31,6 +32,9 @@ public class MatrixClient : ISharedEndpoints
 
     // Lets requests rejected for the same token share one refresh
     private readonly SemaphoreSlim _refreshLock = new(1, 1);
+
+    // Added to a sync's long-poll timeout, for the homeserver to build and send its answer
+    private static readonly TimeSpan SyncTimeoutMargin = TimeSpan.FromSeconds(30);
 
     private const string RefreshFailedMessage = "The access token expired and could not be refreshed. Log in again.";
 
@@ -158,6 +162,41 @@ public class MatrixClient : ISharedEndpoints
     /// <param name="cancellationToken">Cancels the request.</param>
     public Task<WhoAmIResponse> WhoAmIAsync(CancellationToken cancellationToken = default) =>
         InvokeAsync<WhoAmIResponse>(Endpoints.WhoAmI, cancellationToken);
+
+    /// <summary>
+    /// Fetches what changed since the previous sync, or everything for an initial sync: one request to
+    /// <c>GET /sync</c>. Call it in a loop, passing each <see cref="SyncResponse.NextBatch"/> as the next
+    /// <see cref="SyncRequest.Since"/>, with a <see cref="SyncRequest.Timeout"/> to long-poll (D32).
+    /// </summary>
+    /// <remarks>
+    /// Homeservers may answer a request identical to a recent one from a cache: Synapse keeps sync
+    /// responses for two minutes by default. Repeating an initial sync with the same parameters may
+    /// therefore return the earlier answer; continue from <see cref="SyncResponse.NextBatch"/> instead.
+    /// </remarks>
+    /// <param name="request">Parameters; an initial sync that answers at once when omitted.</param>
+    /// <param name="cancellationToken">Cancels the request.</param>
+    public Task<SyncResponse> SyncAsync(SyncRequest? request = null, CancellationToken cancellationToken = default)
+    {
+        request ??= new SyncRequest();
+        if (request.Timeout < TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(request), request.Timeout, "The sync timeout cannot be negative.");
+
+        var query = new List<(string Name, string Value)>();
+        if (request.Since is not null)
+            query.Add(("since", request.Since));
+        if (request.Filter is not null)
+            query.Add(("filter", request.Filter));
+        if (request.FullState)
+            query.Add(("full_state", "true"));
+        if (request.Timeout is { } timeout)
+            query.Add(("timeout", ((long)timeout.TotalMilliseconds).ToString(CultureInfo.InvariantCulture)));
+        var endpoint = Endpoints.Sync.WithQuery(query);
+
+        // The homeserver may hold the request for the whole timeout, so the local timeout must be longer
+        var localTimeout = request.Timeout + SyncTimeoutMargin;
+        return InvokeAsync(endpoint, ct => _transport.SendAsync<SyncResponse>(endpoint, ct, localTimeout),
+            cancellationToken);
+    }
 
     /// <summary>
     /// Gets the IDs of the rooms the user has joined.

@@ -23,6 +23,20 @@ internal static class TestRooms
         return (roomId, $"#{aliasName}:{ServerName(session)}");
     }
 
+    /// <summary>Redacts an event through <c>PUT /rooms/{roomId}/redact/{eventId}/{txnId}</c>.</summary>
+    public static async Task RedactAsync(MatrixSession session, string roomId, string eventId, CancellationToken cancellationToken)
+    {
+        using var http = new HttpClient();
+        var path = $"_matrix/client/v3/rooms/{Uri.EscapeDataString(roomId)}/redact/{Uri.EscapeDataString(eventId)}/{TransactionId.New()}";
+        using var message = new HttpRequestMessage(HttpMethod.Put, new Uri(session.Homeserver, path))
+        {
+            Content = JsonContent.Create(new { reason = "matrix.NET redaction test" })
+        };
+        message.Headers.Authorization = new AuthenticationHeaderValue("Bearer", session.AccessToken);
+        using var response = await http.SendAsync(message, cancellationToken);
+        response.EnsureSuccessStatusCode();
+    }
+
     /// <summary>The server name part of the session's user ID, e.g. <c>localhost</c>.</summary>
     public static string ServerName(MatrixSession session) => session.UserId[(session.UserId.IndexOf(':') + 1)..];
 

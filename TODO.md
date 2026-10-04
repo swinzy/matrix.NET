@@ -27,12 +27,12 @@ adds the rest of what it requires of Web, Desktop and Mobile clients.
 - [x] Logout (`POST /logout`)
 - [x] Refreshing access tokens (`POST /refresh`), automatic by default
 - [x] Transaction identifiers for idempotent sends
-- [ ] Sync: initial and incremental (`GET /sync` with `since` and `timeout`)
+- [x] Sync: initial and incremental (`GET /sync` with `since` and `timeout`)
 - [x] List joined rooms (`GET /joined_rooms`)
 - [x] Join rooms (`POST /join/{roomIdOrAlias}`)
 - [x] Leave rooms (`POST /rooms/{roomId}/leave`)
 - [x] Send text messages (`PUT /rooms/{roomId}/send/m.room.message/{txnId}`, `m.text`)
-- [ ] Read timeline events from sync (`m.room.message`)
+- [x] Read timeline events from sync (`m.room.message`)
 
 ## Must Have
 
