@@ -309,6 +309,147 @@ public class MatrixTransportTests
         Assert.Equal(MatrixErrorCodes.UserSuspended, exception.ErrorCode);
     }
 
+    private static Task<MatrixException> ThrowsMatrixErrorAsync(StubHttpMessageHandler handler) =>
+        Assert.ThrowsAnyAsync<MatrixException>(() =>
+            CreateTransport(handler).SendAsync<WhoAmIResponse>(WhoAmIAt(AuthRequirement.None), TestContext.Current.CancellationToken));
+
+    [Fact]
+    public async Task SendAsync_ReadsRetryAfterHeaderInSeconds()
+    {
+        var handler = new StubHttpMessageHandler((HttpStatusCode)429, """{"errcode":"M_LIMIT_EXCEEDED"}""")
+        {
+            ResponseHeaders = { ["Retry-After"] = "7" }
+        };
+
+        var exception = await ThrowsMatrixErrorAsync(handler);
+
+        Assert.Equal(MatrixErrorCodes.LimitExceeded, exception.ErrorCode);
+        Assert.Equal(TimeSpan.FromSeconds(7), exception.RetryAfter);
+    }
+
+    [Theory]
+    [InlineData("1500", 1500)]
+    [InlineData("1500.7", 1500.7)]
+    [InlineData("-10", 0)]
+    public async Task SendAsync_ReadsDeprecatedRetryAfterMs(string retryAfterMs, double expectedMilliseconds)
+    {
+        var handler = new StubHttpMessageHandler((HttpStatusCode)429,
+            $$"""{"errcode":"M_LIMIT_EXCEEDED","retry_after_ms":{{retryAfterMs}}}""");
+
+        var exception = await ThrowsMatrixErrorAsync(handler);
+
+        Assert.Equal(MatrixErrorCodes.LimitExceeded, exception.ErrorCode);
+        Assert.Equal(TimeSpan.FromMilliseconds(expectedMilliseconds), exception.RetryAfter);
+    }
+
+    [Fact]
+    public async Task SendAsync_PrefersRetryAfterHeaderOverRetryAfterMs()
+    {
+        var handler = new StubHttpMessageHandler((HttpStatusCode)429,
+            """{"errcode":"M_LIMIT_EXCEEDED","retry_after_ms":1500}""")
+        {
+            ResponseHeaders = { ["Retry-After"] = "3" }
+        };
+
+        var exception = await ThrowsMatrixErrorAsync(handler);
+
+        Assert.Equal(TimeSpan.FromSeconds(3), exception.RetryAfter);
+    }
+
+    [Fact]
+    public async Task SendAsync_FallsBackToRetryAfterMsWhenHeaderIsMalformed()
+    {
+        var handler = new StubHttpMessageHandler((HttpStatusCode)429,
+            """{"errcode":"M_LIMIT_EXCEEDED","retry_after_ms":1500}""")
+        {
+            ResponseHeaders = { ["Retry-After"] = "soon" }
+        };
+
+        var exception = await ThrowsMatrixErrorAsync(handler);
+
+        Assert.Equal(TimeSpan.FromMilliseconds(1500), exception.RetryAfter);
+    }
+
+    [Fact]
+    public async Task SendAsync_ReadsRetryAfterHeaderAsDate()
+    {
+        var handler = new StubHttpMessageHandler((HttpStatusCode)429, """{"errcode":"M_LIMIT_EXCEEDED"}""")
+        {
+            ResponseHeaders = { ["Retry-After"] = DateTimeOffset.UtcNow.AddMinutes(2).ToString("R") }
+        };
+
+        var exception = await ThrowsMatrixErrorAsync(handler);
+
+        // The date has whole-second precision, and some time passes before it is read
+        Assert.InRange(exception.RetryAfter!.Value, TimeSpan.FromSeconds(115), TimeSpan.FromSeconds(120));
+    }
+
+    [Fact]
+    public async Task SendAsync_TreatsRetryAfterDateInThePastAsNoWait()
+    {
+        var handler = new StubHttpMessageHandler((HttpStatusCode)429, """{"errcode":"M_LIMIT_EXCEEDED"}""")
+        {
+            ResponseHeaders = { ["Retry-After"] = DateTimeOffset.UtcNow.AddMinutes(-2).ToString("R") }
+        };
+
+        var exception = await ThrowsMatrixErrorAsync(handler);
+
+        Assert.Equal(TimeSpan.Zero, exception.RetryAfter);
+    }
+
+    [Fact]
+    public async Task SendAsync_ClampsHugeRetryAfterMsInsteadOfOverflowing()
+    {
+        var handler = new StubHttpMessageHandler((HttpStatusCode)429,
+            """{"errcode":"M_LIMIT_EXCEEDED","retry_after_ms":1e300}""");
+
+        var exception = await ThrowsMatrixErrorAsync(handler);
+
+        Assert.Equal(MatrixErrorCodes.LimitExceeded, exception.ErrorCode);
+        Assert.True(exception.RetryAfter > TimeSpan.FromDays(10000));
+    }
+
+    [Fact]
+    public async Task SendAsync_LeavesRetryAfterNullWhenNotGiven()
+    {
+        var handler = new StubHttpMessageHandler((HttpStatusCode)429, """{"errcode":"M_LIMIT_EXCEEDED"}""");
+
+        var exception = await ThrowsMatrixErrorAsync(handler);
+
+        Assert.Null(exception.RetryAfter);
+    }
+
+    // A reverse proxy may answer 503 with Retry-After and a body that is not a Matrix error
+    [Fact]
+    public async Task SendAsync_ReadsRetryAfterFromNonMatrixErrors()
+    {
+        var handler = new StubHttpMessageHandler(HttpStatusCode.ServiceUnavailable,
+            "<html>Down for maintenance</html>", "text/html")
+        {
+            ResponseHeaders = { ["Retry-After"] = "120" }
+        };
+
+        var exception = await ThrowsMatrixErrorAsync(handler);
+
+        Assert.Equal(MatrixErrorCodes.Unknown, exception.ErrorCode);
+        Assert.Equal(TimeSpan.FromSeconds(120), exception.RetryAfter);
+    }
+
+    [Fact]
+    public async Task SendAsync_ReadsRetryAfterOnExceptionSubclasses()
+    {
+        var handler = new StubHttpMessageHandler(HttpStatusCode.Unauthorized,
+            """{"errcode":"M_USER_LOCKED","soft_logout":true}""")
+        {
+            ResponseHeaders = { ["Retry-After"] = "60" }
+        };
+
+        var exception = await ThrowsMatrixErrorAsync(handler);
+
+        Assert.IsType<MatrixUserLockedException>(exception);
+        Assert.Equal(TimeSpan.FromSeconds(60), exception.RetryAfter);
+    }
+
     /// <summary>Waits before answering, and honours cancellation while waiting.</summary>
     private sealed class DelayingHandler(TimeSpan delay) : HttpMessageHandler
     {

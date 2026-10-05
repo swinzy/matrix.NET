@@ -32,4 +32,16 @@ public class MatrixException : Exception
 
     /// <summary>The homeserver's own human-readable message, if it sent one.</summary>
     public string? ServerMessage { get; }
+
+    /// <summary>
+    /// How long the homeserver asked the client to wait before trying again, or <see langword="null"/>
+    /// if it did not say. Usually set with <see cref="MatrixErrorCodes.LimitExceeded"/>, but taken from
+    /// any error response that carries it.
+    /// </summary>
+    /// <remarks>
+    /// Read from the <c>Retry-After</c> header, or from the deprecated <c>retry_after_ms</c> property
+    /// that homeservers older than spec v1.10 send instead. Never negative. The library does not retry
+    /// by itself; waiting and retrying is up to the caller.
+    /// </remarks>
+    public TimeSpan? RetryAfter { get; init; }
 }

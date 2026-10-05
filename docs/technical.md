@@ -52,7 +52,7 @@ and is not part of the repository.
 | `LoginFlow` | One entry of `GET /login`'s `flows` |
 | `VersionsResponse` | Response of `GET /versions`: supported spec versions and unstable features |
 | `IIdentifier` / `UserIdentifier` | User identifier objects (`m.id.user`) |
-| `MatrixException` | A Matrix error response (`errcode`, `error` as `ServerMessage`) or a non-Matrix HTTP failure |
+| `MatrixException` | A Matrix error response (`errcode`, `error` as `ServerMessage`) or a non-Matrix HTTP failure; `RetryAfter` when the homeserver asks for a wait (D33) |
 | `MatrixUnknownTokenException` | `M_UNKNOWN_TOKEN`, with `SoftLogout` (D13, D21) |
 | `MatrixUserLockedException` | `M_USER_LOCKED`, with `SoftLogout` (D13, D22) |
 | `MatrixClientState` | `Active`, `Locked`, `LoggedOut` or `Invalidated` (D21, D22) |
@@ -96,6 +96,7 @@ Public types never touch `HttpClient` directly. Each endpoint method makes one
    and access token source are both read once per request.
 5. Turns any non-2xx response into a `MatrixException`. If the body is not a Matrix error
    (for example an HTML page from a reverse proxy), the error code falls back to `M_UNKNOWN`.
+   A requested wait is read into `RetryAfter` (D33).
 6. Deserialises the response. Properties the spec marks as required use C#'s `required`
    modifier, so a missing field throws `JsonException` rather than producing a half-empty
    object. A literal `null` body also throws `JsonException`.
@@ -360,6 +361,50 @@ relaxed (49 bytes): {"Body":"你好，世界 <b>hi</b> \uD83D\uDE00"}
 - **"Unsafe" does not apply here.** The name warns that the output is not safe to embed in
   HTML or a `<script>` block. The library sends JSON to an HTTP API, where the homeserver
   parses it; both forms mean exactly the same to it.
+
+#### D33. Requested waits are exposed as `MatrixException.RetryAfter` (Decided)
+
+`MatrixException.RetryAfter` is how long the homeserver asked the client to wait before trying
+again, or `null` if it did not say. It comes from either of two sources, checked in this order:
+
+1. **The `Retry-After` header,** the current way since spec v1.10 (MSC4041). Both forms of the
+   header are read: seconds, and an HTTP date, which is turned into the time left from now.
+2. **The `retry_after_ms` property** of the error body, deprecated since v1.10 but the only
+   source on older homeservers.
+
+Details:
+
+- **Any error response is read,** not only `M_LIMIT_EXCEEDED`. A reverse proxy may answer
+  `503` with `Retry-After` and an HTML body; that still yields `RetryAfter`, with the error
+  code falling back to `M_UNKNOWN`.
+- **Bad values never hide the error.** A header that does not parse is ignored, and the body is
+  tried next. `retry_after_ms` is read as a number that may have a fraction, so a lenient
+  homeserver's `1500.5` does not make the whole error body unreadable. A date in the past
+  means no wait, and a huge value is capped instead of overflowing `TimeSpan`.
+- **The library does not wait or retry by itself.** It only reports what the homeserver asked
+  for. The sync loop uses it; ordinary endpoint calls leave retrying to the app.
+
+Checked against Synapse with its default rate limits, by failing logins until it answered
+`429`:
+
+| Synapse | `Retry-After` header | `retry_after_ms` |
+|---|---|---|
+| 1.162.0 | `334` (seconds, rounded up) | `333295` |
+| v1.98.0 | none | `333299` |
+
+So both sources are needed: the header alone would miss every wait from older homeservers.
+
+**Why a property on `MatrixException`, not a subclass (D13):**
+
+- `Retry-After` is an HTTP header that any status may carry, not part of one error code. A
+  `MatrixLimitExceededException` would miss the `503` case above, and apps would need two
+  checks for one question.
+- Callers deciding whether to wait, like the sync loop, can read one property on whatever
+  `MatrixException` they caught, including the subclasses.
+
+**Why the header first:** the spec now prefers it, and when both are present, as on current
+Synapse, they agree up to the header's rounding up to whole seconds, which errs on the side of
+waiting slightly longer.
 
 ### 3.2 Authenticated session design
 
@@ -702,6 +747,9 @@ Rules:
 
 `MatrixException` stays the single error type until a specific error needs more than an
 error code. A subclass is added when that happens, not in advance.
+
+Data that any error response may carry, rather than one error code, goes on
+`MatrixException` itself instead, like `RetryAfter` (D33).
 
 Subclasses so far:
 
@@ -1622,7 +1670,6 @@ fields every event has: `EventId`, `Type`, `Sender`, `OriginServerTs`, `StateKey
 - `/sync` models only room timelines (D32); there is no sync loop yet.
 - XML documentation is generated and shipped, so IDEs show it. Warning CS1591, for missing
   documentation, is silenced until all public members are documented.
-- Rate-limit details (`retry_after_ms`) are not exposed.
 - `well_known` in the login response and the deprecated `home_server` field are not
   modelled.
 - There is no server discovery (`.well-known`) yet. The homeserver URL must be known.

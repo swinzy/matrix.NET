@@ -131,16 +131,40 @@ internal sealed class MatrixTransport
 
         var errorCode = error?.Errcode ?? MatrixErrorCodes.Unknown;
         var softLogout = error?.SoftLogout ?? false;
+        var retryAfter = GetRetryAfter(response, error);
         throw errorCode switch
         {
             MatrixErrorCodes.UnknownToken => new MatrixUnknownTokenException(response.StatusCode, error?.Error, softLogout)
             {
-                RejectedAccessToken = sentAccessToken
+                RejectedAccessToken = sentAccessToken,
+                RetryAfter = retryAfter
             },
-            MatrixErrorCodes.UserLocked => new MatrixUserLockedException(response.StatusCode, error?.Error, softLogout),
-            _ => new MatrixException(response.StatusCode, errorCode, error?.Error)
+            MatrixErrorCodes.UserLocked => new MatrixUserLockedException(response.StatusCode, error?.Error, softLogout)
+            {
+                RetryAfter = retryAfter
+            },
+            _ => new MatrixException(response.StatusCode, errorCode, error?.Error) { RetryAfter = retryAfter }
         };
     }
+
+    // The header is the current way (spec v1.10); retry_after_ms is the deprecated one older
+    // homeservers send instead. A header that does not parse is ignored rather than failing the error
+    internal static TimeSpan? GetRetryAfter(HttpResponseMessage response, ErrorResponse? error)
+    {
+        var header = response.Headers.RetryAfter;
+        if (header?.Delta is { } delta)
+            return ClampRetryAfter(delta.TotalMilliseconds);
+        if (header?.Date is { } date)
+            return ClampRetryAfter((date - DateTimeOffset.UtcNow).TotalMilliseconds);
+        if (error?.RetryAfterMs is { } milliseconds)
+            return ClampRetryAfter(milliseconds);
+
+        return null;
+    }
+
+    // A date in the past means "now"; an absurdly large value must not overflow TimeSpan
+    private static TimeSpan ClampRetryAfter(double milliseconds) =>
+        TimeSpan.FromMilliseconds(Math.Clamp(milliseconds, 0, TimeSpan.MaxValue.TotalMilliseconds - 1));
 
     private static HttpClient CreateSharedClient(bool automaticDecompression) =>
         new(CreateSharedHandler(automaticDecompression)) { Timeout = Timeout.InfiniteTimeSpan };
@@ -159,5 +183,7 @@ internal sealed class MatrixTransport
     private static Uri WithTrailingSlash(Uri uri) =>
         uri.AbsolutePath.EndsWith('/') ? uri : new Uri(uri.AbsoluteUri + "/");
 
-    internal record ErrorResponse(string Errcode, string? Error, bool? SoftLogout);
+    // RetryAfterMs is a double so a fractional value from a lenient homeserver does not discard the
+    // whole error body
+    internal record ErrorResponse(string Errcode, string? Error, bool? SoftLogout, double? RetryAfterMs = null);
 }

@@ -12,6 +12,9 @@ public class StubHttpMessageHandler : HttpMessageHandler
     private readonly string _content;
     private readonly string _mediaType;
 
+    /// <summary>Headers added to the response, unvalidated so tests can send malformed values.</summary>
+    public Dictionary<string, string> ResponseHeaders { get; } = new();
+
     public HttpRequestMessage? Request { get; private set; }
     public string? RequestBody { get; private set; }
 
@@ -29,9 +32,13 @@ public class StubHttpMessageHandler : HttpMessageHandler
         if (request.Content is not null)
             RequestBody = await request.Content.ReadAsStringAsync(cancellationToken);
 
-        return new HttpResponseMessage(_statusCode)
+        var response = new HttpResponseMessage(_statusCode)
         {
             Content = new StringContent(_content, Encoding.UTF8, _mediaType)
         };
+        foreach (var (name, value) in ResponseHeaders)
+            response.Headers.TryAddWithoutValidation(name, value);
+
+        return response;
     }
 }
