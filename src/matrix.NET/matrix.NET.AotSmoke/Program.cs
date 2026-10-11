@@ -146,6 +146,22 @@ if (client is not null)
         Require(refreshed == 1, $"refreshed {refreshed} times");
     });
 
+    await Check("sync loop", async () =>
+    {
+        // Without a long poll, so the check takes no longer than it must
+        var loop = new SyncLoop(client, new SyncLoopOptions { Timeout = TimeSpan.Zero });
+        var batches = new List<string>();
+        await foreach (var sync in loop.RunAsync())
+        {
+            batches.Add(sync.NextBatch);
+            if (batches.Count == 2)
+                break;
+        }
+
+        Require(loop.Since == batches[0] && loop.State == SyncLoopState.Stopped,
+            $"since {loop.Since}, state {loop.State} after {string.Join(", ", batches)}");
+    });
+
     await Check("logout", async () => await client.LogoutAsync());
 }
 

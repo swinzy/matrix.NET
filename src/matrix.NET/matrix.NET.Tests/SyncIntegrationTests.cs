@@ -69,6 +69,41 @@ public class SyncIntegrationTests(LoggedInClientFixture fixture)
         Assert.NotEmpty(response.NextBatch);
     }
 
+    [Fact]
+    public async Task SyncLoop_HandsOverAMessageSentWhileItWaits()
+    {
+        Assert.SkipUnless(fixture.Settings.IsLocal, TestRooms.LocalOnly);
+        var client = await fixture.GetClientAsync();
+        var roomId = await TestRooms.CreateAsync(client.Session, Ct);
+        var onlyThisRoom = """{"room":{"rooms":[""" + $"\"{roomId}\"" + """]}}""";
+        var since = (await client.SyncAsync(new SyncRequest { Filter = onlyThisRoom }, Ct)).NextBatch;
+        var loop = new SyncLoop(client, new SyncLoopOptions { Since = since, Filter = onlyThisRoom });
+        var states = new List<SyncLoopState>();
+        loop.StateChanged += (_, e) => states.Add(e.State);
+
+        // Sent once the loop's first long poll is waiting, which the message must end early
+        var stopwatch = Stopwatch.StartNew();
+        var send = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromSeconds(1), Ct);
+            return await client.SendMessageAsync(roomId, new TextMessageContent("matrix.NET sync loop test"),
+                cancellationToken: Ct);
+        }, Ct);
+        MessageEvent? received = null;
+        await foreach (var sync in loop.RunAsync(Ct))
+        {
+            received = Events(sync, roomId).OfType<MessageEvent>().FirstOrDefault();
+            if (received is not null)
+                break;
+        }
+
+        Assert.Equal((await send).EventId, received!.EventId);
+        Assert.InRange(stopwatch.Elapsed, TimeSpan.Zero, TimeSpan.FromSeconds(20));
+        Assert.Equal([SyncLoopState.Syncing, SyncLoopState.Stopped], states);
+
+        await client.LeaveRoomAsync(roomId, cancellationToken: Ct);
+    }
+
     private static IEnumerable<RoomEvent> Events(SyncResponse sync, string roomId) =>
         sync.Rooms?.Join?.GetValueOrDefault(roomId)?.Timeline?.Events ?? [];
 }

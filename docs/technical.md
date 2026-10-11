@@ -17,6 +17,7 @@ This is not a guide. There is (not yet) a dedicated usage guide available.
 4. [Pitfalls and limitations](#4-pitfalls-and-limitations)
 5. [Future plans](#5-future-plans)
 6. [Appendix: session design in other SDKs](#appendix-session-design-in-other-sdks)
+7. [Appendix: sync loops in other SDKs](#appendix-sync-loops-in-other-sdks)
 
 ## 1. Project layout
 
@@ -71,6 +72,8 @@ and is not part of the repository.
 | `Transport.MessageContentConverter` (internal) | Reads and writes `MessageContent` by `msgtype` without losing data (D30) |
 | `SyncRequest` / `SyncResponse` and its parts | Parameters and result of `SyncAsync`; room timelines modelled, the rest kept (D32) |
 | `RoomEvent` and subclasses | Timeline events: `MessageEvent`, `EncryptedEvent`, `RedactionEvent`, `RedactedRoomEvent`, `UnknownRoomEvent`, `InvalidRoomEvent` (D32) |
+| `SyncLoop` / `SyncLoopOptions` | Syncs continuously as an `IAsyncEnumerable<SyncResponse>`, retrying errors that may go away (D34) |
+| `SyncLoopState` / `SyncLoopStateChangedEventArgs` | `Stopped`, `Syncing` or `Retrying`, and the data of `SyncLoop.StateChanged` (D34) |
 | `Transport.RoomEventConverter` (internal) | Reads and writes `RoomEvent` by `type` without losing data (D32) |
 | `Transport.ReflectionJson` (internal) | Reflection-based options for app content, used only by the overloads marked as needing it (D29) |
 | `MatrixFeature` | The features added after the minimum version, with the versions that added and removed them (D26) |
@@ -476,9 +479,9 @@ Rules for the constructor:
   it is still valid: a rejected token is refreshed if possible (D12). Otherwise it throws
   `MatrixUnknownTokenException` and raises the session-invalidated notification (D14). Apps
   that want an early check can call `whoami` themselves.
-- **Heavy start-up work belongs to an explicit start step.** For example, the future sync loop
-  will be started with its own method, as matrix-js-sdk separates `createClient()` from
-  `startClient()`.
+- **Heavy start-up work belongs to an explicit start step.** For example, the sync loop is
+  started with its own method, `SyncLoop.RunAsync` (D34), as matrix-js-sdk separates
+  `createClient()` from `startClient()`.
 
 **Why no I/O on creation:** none of the I/O the library will ever need has to happen at
 creation. Keeping the constructor free of I/O means no async factory or initialisation method
@@ -1014,8 +1017,10 @@ session just like any other endpoint.
 When the client's own message replaces the homeserver's (D12), the original text stays
 available as `MatrixException.ServerMessage` and is appended to the message.
 
-**Stateful components own disposal.** The future sync loop, room and state caches, and the
-crypto store are separate types (D20), and they implement `IAsyncDisposable`:
+**Stateful components own disposal.** The future room and state caches and the crypto store
+are separate types (D20), and those that start background work or open storage implement
+`IAsyncDisposable`. The sync loop (D34) is a separate type too, but needs no disposal: it runs
+only while the app enumerates it.
 
 - When the session ends, they stop background work but keep local data.
 - Methods to clear local data live on these components. After an explicit logout the app
@@ -1562,7 +1567,7 @@ Sending has two layers:
 
 `MatrixClient.SyncAsync(SyncRequest?)` sends one `GET /sync` and returns a `SyncResponse`. It is
 an ordinary endpoint (D20): apps that only want the endpoint layer write their own loop around
-it. A sync loop component, built on it, is a separate design (D21).
+it. The sync loop component is built on it (D34).
 
 - **Parameters are an object,** `SyncRequest`, with `Since`, `Timeout`, `Filter` and
   `FullState`. `/sync` keeps gaining parameters (e.g. `use_state_after` in v1.16), and adding a
@@ -1610,6 +1615,74 @@ fields every event has: `EventId`, `Type`, `Sender`, `OriginServerTs`, `StateKey
   is not needed to read messages. Keeping the rest whole avoids both a big model nobody uses
   yet and silently dropped data.
 - **One malformed or unfamiliar event must not break a sync response,** as in D30.
+
+### 3.5 Stateful components
+
+Components built on the endpoint layer (D20), each a separate type from `MatrixClient` (D21).
+
+#### D34. The sync loop is pulled by the app, with its state on a small object (Decided)
+
+`SyncLoop` syncs continuously. The app pulls responses from it with `await foreach`:
+
+```csharp
+var loop = new SyncLoop(client, new SyncLoopOptions { Since = LoadSavedToken() });
+loop.StateChanged += (_, e) => ShowConnectionStatus(e.State);   // UI only
+
+await foreach (var sync in loop.RunAsync(cancellationToken))
+{
+    Handle(sync);
+    SaveToken(sync.NextBatch);   // after handling: at least once
+}
+```
+
+- **Pulling is the foundation; pushing can be added on top later.** `RunAsync` returns an
+  `IAsyncEnumerable<SyncResponse>`. The loop runs only while the app enumerates it, on the
+  app's own `await`, so there is no background task and nothing to dispose. A request is sent
+  once the app asks for the next response, so a slow app is never flooded. Dispatching to
+  several subscribers, e.g. for a room state cache or different parts of an app, can be built
+  on this stream without changing it.
+- **State lives on the `SyncLoop` object.** `State` is `Stopped`, `Syncing` or `Retrying`, and
+  `StateChanged` is raised on each change and for each further failed attempt, with the
+  error, the attempt number and the delay. It follows the same rules as
+  `MatrixClient.SessionChanged` (D14): synchronous, and exceptions from handlers are
+  swallowed. A locked account shows as `Retrying` with a `MatrixUserLockedException`, while
+  `MatrixClient` itself reports the lock and the unlock (D22).
+- **Errors that may go away are retried inside the loop, indefinitely:** network failures,
+  local timeouts, 5xx responses, `429` and `M_USER_LOCKED`. The wait is 1 second after the
+  first failure, doubling up to 1 minute, as in matrix-nio, unless the homeserver asks for a
+  specific wait (`RetryAfter`, D33). A success resets it. While the account is locked this is
+  the rate-limited polling the spec asks for.
+- **Everything else ends the enumeration by throwing:** `M_UNKNOWN_TOKEN` once the session has
+  ended, any other 4xx such as an invalid filter, and a response that cannot be read. These
+  would fail the same way on every retry. C# cannot hand errors over as items in the stream as
+  rust-sdk does, since an `IAsyncEnumerable` ends at its first exception.
+- **The app saves `since`, after handling each response** (D17). The loop's own position,
+  `Since`, moves to a response's `NextBatch` only when the app asks for the next one, so
+  running the loop again after the app stopped mid-response repeats that response instead of
+  skipping it.
+- **The first request is an initial sync that answers at once** when there is no `Since`;
+  every later one long-polls for `Timeout`, 30 seconds by default. A filter is passed as is.
+- **One run at a time.** A second concurrent `RunAsync` throws `InvalidOperationException`;
+  running again after the first ends is fine.
+- **Created with its constructor,** `new SyncLoop(client, options)`, like `MatrixClient` (D8).
+
+**Why:**
+
+- **Pull versus push:** five SDKs were researched (see the appendix). All offer push-style
+  handlers, but only rust-sdk builds them on a pull-based stream. Push can be built on pull,
+  not the other way round: turning callbacks into a stream needs a buffer, with the question
+  of what to do when it fills. Push-only would also need a background task with start, stop
+  and disposal, contradicting D20.
+- **A state on the loop:** four of the five SDKs expose a connection state, because apps
+  want to show "reconnecting". rust-sdk's loop has none and hands each error to the caller,
+  which C# streams cannot do.
+- **Retry policy:** the SDKs agree only on retrying indefinitely until the token is
+  invalid. matrix-nio's capped exponential backoff, honouring the homeserver's requested wait,
+  is simple and predictable.
+- **Saving `since` after handling:** mautrix-python saves it before handling, so a crash
+  mid-batch loses that batch for good. Trixnity saves it after, so a crash repeats the batch.
+  Repeating is recoverable and losing is not, so the library recommends saving afterwards,
+  and apps must tolerate seeing a batch twice.
 
 ## 4. Pitfalls and limitations
 
@@ -1667,7 +1740,7 @@ fields every event has: `EventId`, `Type`, `Sender`, `OriginServerTs`, `StateKey
 - Only `m.id.user` identifiers are supported.
 - Encrypted rooms cannot be read: every message in them is an `EncryptedEvent` until
   end-to-end encryption is implemented.
-- `/sync` models only room timelines (D32); there is no sync loop yet.
+- `/sync` models only room timelines (D32).
 - XML documentation is generated and shipped, so IDEs show it. Warning CS1591, for missing
   documentation, is silenced until all public members are documented.
 - `well_known` in the login response and the deprecated `home_server` field are not
@@ -1715,3 +1788,23 @@ Notes:
     made with the appservice token.
   - Child APIs share the parent's token, HTTP session and transaction counter, so each extra
     puppet costs almost nothing.
+
+## Appendix: sync loops in other SDKs
+
+Summary of source research from October 2026, for D34.
+
+| SDK | Delivery | Where the loop runs | Retrying | Stops on | Saving `since` |
+|---|---|---|---|---|---|
+| matrix-rust-sdk | Pull: `sync_stream` is the core; `sync` and `sync_with_callback` wrap it. Push-style event handlers can also be registered on the client | The caller's await | None in the loop: errors are handed to the caller as stream items and the loop continues; waits 1 second if two syncs are under 1 second apart | The caller's choice | The library's state store (`ReusePrevious`) |
+| matrix-js-sdk | Push: `EventEmitter` (`SyncState`, `RoomEvent.Timeline`) | Background (`startClient`) | After a failure, probes `/versions` every 2 to 7 seconds (random jitter) and resumes once it answers; `ERROR` state after 3 failures in a row | `M_UNKNOWN_TOKEN` | Optional store (IndexedDB) |
+| matrix-nio | Push: callbacks | The caller's await (`await sync_forever()`) | In the HTTP layer: `429` waits `retry_after_ms` (5 seconds if absent); connection errors back off exponentially, 0.1 × 2ⁿ seconds capped at 60, indefinitely | Cancellation only | Optional store |
+| mautrix-python | Push: event handlers, plus internal events (started, errored with the wait, succeeded, stopped) | Background task | 5 seconds, doubling up to 320 | `M_UNKNOWN_TOKEN` | `SyncStore` interface |
+| Trixnity (Kotlin) | Push: subscribers (`suspend` functions, awaited), state as a `StateFlow`; a one-off `sync()` too | Background coroutine | Configurable delay | `stop` / `cancel` | `SyncBatchTokenStore` interface |
+
+Notes:
+
+- **Saving `since` has consequences.** mautrix-python saves it before handling a batch (at
+  most once: a crash loses the batch); Trixnity saves it after (at least once: a crash
+  repeats it).
+- **Retry policies differ widely,** from none to 320 seconds, but all retry indefinitely
+  except for an invalid token.
