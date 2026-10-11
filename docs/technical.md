@@ -163,9 +163,9 @@ written twice. Adding `m.id.thirdparty` or `m.id.phone` means adding a class and
     versions needs no rebuild.
   - Access tokens issued with a refresh token expire after 2 seconds
     (`refreshable_access_token_lifetime`), so `RefreshIntegrationTests` can wait for a real
-    expiry and check the automatic refresh end to end. Logins without a refresh token, such
-    as the shared one, never expire. That test only runs against the local Synapse, and is
-    skipped before logging in otherwise.
+    expiry and check, end to end, the automatic refresh and the recovery from a soft logout.
+    Logins without a refresh token, such as the shared one, never expire. These tests only
+    run against the local Synapse, and are skipped before logging in otherwise.
   - The script rewrites its overrides in `homeserver.yaml` on every start, so changes to them
     reach existing data directories.
   - It also registers a second account, `matrixdotnet-other`, with the same password, written
@@ -1010,6 +1010,11 @@ After logout or invalidation:
   with `MatrixServer` (D19): they do not silently fall back to unauthenticated requests.
   To call them without a session, use `MatrixServer`.
 - A new login produces a new session and a new `MatrixClient`.
+- **After a soft logout** (`SoftLogout` is `true`), the app may keep its local data and log in
+  again on the same device, as the spec allows, by passing the old `DeviceId` to
+  `LoginRequest.DeviceId`. Synapse reports an expired access token as a soft logout, and an
+  integration test checks this recovery against it. If `SoftLogout` is `false`, the spec says
+  local data such as encryption keys must be discarded.
 
 How `LogoutAsync` treats failures:
 

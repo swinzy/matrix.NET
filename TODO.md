@@ -52,7 +52,7 @@ adds the rest of what it requires of Web, Desktop and Mobile clients.
 - [ ] OAuth 2.0 API (`GET /auth_metadata`, authorisation code flow); servers that only
       support OAuth 2.0 reject legacy login with `M_UNRECOGNIZED`
 - [ ] Token login (`m.login.token`)
-- [ ] Soft logout (`M_UNKNOWN_TOKEN` with `soft_logout`)
+- [x] Soft logout (`M_UNKNOWN_TOKEN` with `soft_logout`)
 - [ ] Logout all devices (`POST /logout/all`)
 - [ ] Third-party (`m.id.thirdparty`) and phone (`m.id.phone`) identifiers
 - [x] Locked and suspended account errors (`M_USER_LOCKED`, `M_USER_SUSPENDED`)

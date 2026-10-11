@@ -50,6 +50,49 @@ public class RefreshIntegrationTests
         await client.LogoutAsync(Ct);
     }
 
+    // The spec's soft logout recovery: the session ended, but its device and local data may be kept,
+    // so logging in again names the same device
+    [Fact]
+    public async Task SoftLogout_LoggingInAgainKeepsTheDevice()
+    {
+        var settings = TestSettings.Load();
+        Assert.SkipUnless(settings.IsConfigured, TestSettings.NotConfiguredMessage);
+        Assert.SkipUnless(settings.IsLocal, "Needs the local Synapse's short token lifetime");
+        var server = new MatrixServer(new Uri(settings.Homeserver!));
+        LoginRequest Login(string? deviceId) => new()
+        {
+            Type = "m.login.password",
+            Identifier = new UserIdentifier { User = settings.User! },
+            Password = settings.Password,
+            DeviceId = deviceId,
+            InitialDeviceDisplayName = "matrix.NET soft logout test"
+        };
+
+        var session = (await server.LoginAsync(Login(null), Ct)).Session;
+        var expiresAt = Assert.NotNull(session.ExpiresAt);
+        // Without refresh, the expired token ends the session as a soft logout
+        var client = new MatrixClient(session, new ClientOptions { AutoRefreshToken = false });
+        var changes = new List<SessionChangedEventArgs>();
+        client.SessionChanged += (_, e) => changes.Add(e);
+
+        await Task.Delay(expiresAt - DateTimeOffset.UtcNow + TimeSpan.FromSeconds(1), Ct);
+        var rejection = await Assert.ThrowsAsync<MatrixUnknownTokenException>(() => client.WhoAmIAsync(Ct));
+
+        Assert.True(rejection.SoftLogout);
+        Assert.Equal(MatrixClientState.Invalidated, client.State);
+        var change = Assert.Single(changes);
+        Assert.Equal(SessionChangeKind.Invalidated, change.Kind);
+        Assert.True(change.SoftLogout);
+
+        var again = (await server.LoginAsync(Login(client.DeviceId), Ct)).Session;
+        var resumed = new MatrixClient(again, new ClientOptions { AutoRefreshToken = false });
+
+        Assert.Equal(session.DeviceId, again.DeviceId);
+        Assert.Equal(session.DeviceId, (await resumed.WhoAmIAsync(Ct)).DeviceId);
+
+        await resumed.LogoutAsync(Ct);
+    }
+
     private sealed class SavingHandler(List<MatrixSession> saved) : ISessionRefreshHandler
     {
         public ValueTask OnSessionRefreshedAsync(MatrixSession session, CancellationToken cancellationToken)
