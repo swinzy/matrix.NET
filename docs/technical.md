@@ -8,6 +8,20 @@ This is not a guide. There is (not yet) a dedicated usage guide available.
 - **Spec baseline:** [Matrix Client-Server API](https://spec.matrix.org/latest/client-server-api/) v1.19
 - **Target framework:** .NET 10 (LTS, supported until November 2028)
 - **Roadmap:** [TODO.md](../TODO.md)
+- **Behaviour differences from other SDKs:** [behaviour-differences.md](behaviour-differences.md)
+
+**Built on the work of others.** Many design decisions here were made by first reading how
+existing Matrix SDKs solve the same problem: matrix-rust-sdk with ruma, matrix-js-sdk with
+Element Web, matrix-nio, mautrix-python and Trixnity. Their code, comments and history
+showed what works in practice and why, and saved this project from rediscovering much of
+it. Thanks to their authors and contributors for that work and for sharing it openly.
+
+Where matrix.NET differs noticeably from them, the difference is described in
+[behaviour-differences.md](behaviour-differences.md). A difference does not mean their
+choice falls short. Each was decided after comparing the approaches, weighing the spec,
+the experience of developers using the library, and, above all, my own preferences. Every
+approach weighs pros and cons and makes compromises: theirs make some, and mine make
+others. Neither is better in general; they suit different priorities.
 
 ## Contents
 
@@ -205,7 +219,7 @@ written twice. Adding `m.id.thirdparty` or `m.id.phone` means adding a class and
 
 Each decision records its status, what was decided and why.
 
-- **Decided**: agreed by the maintainer.
+- **Decided**: agreed by me.
 - **Proposed**: recommended during design discussion, awaiting confirmation.
 - **Deferred**: agreed in principle but not scheduled yet.
 
@@ -268,7 +282,7 @@ logging in.
 
 #### D3. Test client kept out of the repository (Decided)
 
-`ConsoleClient` is the maintainer's local scratch project, so it is git-ignored and removed
+`ConsoleClient` is my local scratch project, so it is git-ignored and removed
 from `matrix.NET.sln`. It keeps its own local `ConsoleClient.sln`.
 
 #### D4. Integration test credentials never committed (Decided)
@@ -727,9 +741,10 @@ Rules:
   `soft_logout: true` property, the client should consider the user as being logged out."
   - A rejection without the property, including Synapse's 403, therefore reports
     `SoftLogout = false`.
-  - matrix-js-sdk, and so Element Web, reports the access token's rejection instead, which
-    usually carries `soft_logout: true`. That keeps local data where the spec says to discard
-    it. This library follows the spec; the app decides what to do with local data.
+  - matrix-js-sdk (and so Element Web) and matrix-rust-sdk report the earlier rejection of
+    the access token, which usually carries `soft_logout: true`, so local data is kept.
+    Trixnity reads the refresh response, as this library does. Either way the app decides
+    what to do with local data (see [behaviour-differences.md](behaviour-differences.md)).
 - A refresh answered with `M_USER_LOCKED` locks the client like any other request (D22).
 - If the response has no new refresh token, the old one is kept, as the spec allows.
 - One lock serialises refreshes. A request rejected for a token that another request has
@@ -851,8 +866,8 @@ client invalid.
   data afterwards.
 
 **Why:** In JS and rust-sdk, `isLoggedIn()` or the auth state still reports "logged in"
-after logout. In nio, identity and stores are left in an undefined state. An explicit state
-avoids both.
+after logout. In nio, logout clears the token only, and identity and stores keep their
+values. An explicit state tells the app which case it is in.
 
 #### D16. Authentication is added by the transport layer, not a `DelegatingHandler` (Decided)
 
@@ -1046,8 +1061,8 @@ only while the app enumerates it.
 - **Resources and disposal belong together:** only what starts background work or opens
   storage needs disposing.
 - **One simple rule after logout, "the client cannot be used":** clearer than some endpoints
-  working and others throwing. It also avoids the JS and rust-sdk problem of a client that
-  still looks logged in.
+  working and others throwing. In matrix-js-sdk and matrix-rust-sdk, a client keeps reporting
+  "logged in" after logout; here `State` becomes `LoggedOut`.
 
 #### D22. A locked account is a recoverable state, not an invalidated session (Decided)
 
@@ -1111,10 +1126,11 @@ The steps and their outcomes follow the spec's terms:
   and then "Make a GET request to `https://hostname/.well-known/matrix/client`". So
   `@alice:example.org:8448` is looked up at `https://example.org/.well-known/matrix/client`.
   The wording "Extract the hostname from the server name" has been there since r0.4.0; v1.11
-  added "as described by the grammar" (matrix-spec #1862, a clarification). Every SDK
-  researched keeps the port instead (see the appendix), and none of their code or history
-  explains why. A server name with a port often names a federation port such as 8448, while
-  clients find the file over HTTPS on the default port.
+  added "as described by the grammar" (matrix-spec #1862, a clarification). The other SDKs
+  researched keep the port, which suits deployments that serve the file on that port (see
+  the appendix and [behaviour-differences.md](behaviour-differences.md)). A server name with
+  a port often names a federation port such as 8448, while clients find the file over HTTPS
+  on the default port.
 - **No fallback on 404.** Three of the SDKs researched, or the app on top of them, try the
   server name as the homeserver URL; the library leaves that to the app, which knows whether
   to ask the user first.
@@ -1518,9 +1534,9 @@ added, so each endpoint is declared exactly once and checked against the spec au
   add hidden I/O and latency to an already failing call (D20). The cache is usually filled by
   then anyway.
 - **Version ranges rather than exact matches.**
-  - matrix-js-sdk and mautrix-python check whether a version string is present. That misses
-    a server advertising only `v1.12` for a v1.11 feature, and says nothing about removals.
-    It mostly works because servers such as Synapse list every version they support.
+  - matrix-js-sdk and mautrix-python check whether a version string is present. That covers
+    servers such as Synapse, which list every version they support; a server advertising only
+    `v1.12` would not match a check for `v1.11`, and removals are not represented.
   - Assuming that "newer implies everything older" is also wrong, given the removals above.
   - Ranges with an optional removal version, as ruma uses, follow the spec's rule that a
     server implements everything in each version it advertises.
