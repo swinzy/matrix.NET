@@ -50,26 +50,55 @@ public class MatrixServer : ISharedEndpoints
         ArgumentNullException.ThrowIfNull(homeserver);
 
         Options = options ?? new ServerOptions();
+        VersionsCache.ValidateLifetime(Options.VersionsCacheLifetime, nameof(options));
 
         var automaticDecompression = Options.AutomaticDecompression;
         _transport = new MatrixTransport(homeserver,
-            httpClientSource ?? (() => MatrixTransport.GetSharedClient(automaticDecompression)));
-        _shared = new SharedEndpoints(_transport);
+            httpClientSource ?? (() => MatrixTransport.GetSharedClient(automaticDecompression)),
+            cachedVersions: () => _shared.Versions.Cached);
+        _shared = new SharedEndpoints(ct => _transport.SendAsync<VersionsResponse>(Endpoints.Versions, ct),
+            Options.VersionsCacheLifetime, Options.TimeProvider);
     }
 
     /// <summary>The options this server was created with.</summary>
     public ServerOptions Options { get; }
 
     /// <summary>
-    /// Gets the specification versions and experimental features the homeserver supports.
+    /// Gets the specification versions and experimental features the homeserver supports, from the
+    /// cache if it holds them and they have not expired (D25); otherwise fetches them first.
     /// </summary>
     /// <remarks>
     /// Sent without an access token. Homeservers may advertise some experimental features only
-    /// to logged-in users, so a <see cref="MatrixClient"/> may see more.
+    /// to logged-in users, so a <see cref="MatrixClient"/> may see more. Concurrent calls share one
+    /// request, and a failed request leaves the cache as it was.
     /// </remarks>
     /// <param name="cancellationToken">Cancels the request.</param>
     public Task<VersionsResponse> GetVersionsAsync(CancellationToken cancellationToken = default) =>
         _shared.GetVersionsAsync(cancellationToken);
+
+    /// <summary>
+    /// Fetches the specification versions and experimental features now, whatever the cache holds,
+    /// and caches them (D25). Use it to pay for the request when the app chooses, e.g. at start-up.
+    /// </summary>
+    /// <param name="cancellationToken">Cancels the request.</param>
+    public Task<VersionsResponse> RefreshVersionsAsync(CancellationToken cancellationToken = default) =>
+        _shared.RefreshVersionsAsync(cancellationToken);
+
+    /// <summary>
+    /// Whether the homeserver advertises <paramref name="feature"/>, e.g. to hide or disable it before
+    /// the user tries it (D26). Uses the cached versions, fetching them if needed as
+    /// <see cref="GetVersionsAsync"/> does.
+    /// </summary>
+    /// <remarks>
+    /// <see langword="false"/> is not proof that the feature is missing: a homeserver may ship it before
+    /// advertising the version that contains it. To be certain, call the endpoint and handle the error.
+    /// Homeservers may advertise some features only to logged-in users, so a <see cref="MatrixClient"/>
+    /// may answer <see langword="true"/> where this answers <see langword="false"/>.
+    /// </remarks>
+    /// <param name="feature">A feature, e.g. <see cref="MatrixFeature.TokenRefresh"/>.</param>
+    /// <param name="cancellationToken">Cancels the request, if one is needed.</param>
+    public Task<bool> SupportsAsync(MatrixFeature feature, CancellationToken cancellationToken = default) =>
+        _shared.SupportsAsync(feature, cancellationToken);
 
     public async Task<List<LoginFlow>> GetSupportedLoginTypesAsync(CancellationToken cancellationToken = default)
     {

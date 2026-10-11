@@ -1,3 +1,5 @@
+using TeamBanana.MatrixDotNet.Transport;
+
 namespace TeamBanana.MatrixDotNet;
 
 /// <summary>
@@ -13,4 +15,15 @@ public sealed class ServerOptions
     /// <see langword="true"/>.
     /// </summary>
     public bool AutomaticDecompression { get; init; } = true;
+
+    /// <summary>
+    /// How long the homeserver's <c>GET /versions</c> is cached before the next call that needs it fetches
+    /// it again (D25). Defaults to one day. <see cref="TimeSpan.Zero"/> fetches it every time;
+    /// <see cref="Timeout.InfiniteTimeSpan"/> keeps it until <see cref="MatrixServer.RefreshVersionsAsync"/>
+    /// is called, so the app decides when to pay for the request.
+    /// </summary>
+    public TimeSpan VersionsCacheLifetime { get; init; } = VersionsCache.DefaultLifetime;
+
+    // Replaced by tests, to expire the cache without waiting
+    internal TimeProvider TimeProvider { get; init; } = TimeProvider.System;
 }

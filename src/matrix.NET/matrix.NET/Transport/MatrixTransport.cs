@@ -35,6 +35,7 @@ internal sealed class MatrixTransport
 
     private readonly Func<HttpClient> _clientSource;
     private readonly Func<string?>? _accessTokenSource;
+    private readonly Func<VersionsResponse?>? _cachedVersions;
 
     /// <param name="homeserver">Base URL of the homeserver; may include a path.</param>
     /// <param name="clientSource">
@@ -43,12 +44,17 @@ internal sealed class MatrixTransport
     /// <param name="accessTokenSource">
     /// Called once per request that may carry a token. Null for unauthenticated use.
     /// </param>
+    /// <param name="cachedVersions">
+    /// Returns the cached <c>/versions</c>, if any, to explain why an endpoint seems to be missing.
+    /// Never fetches (D26).
+    /// </param>
     public MatrixTransport(Uri homeserver, Func<HttpClient>? clientSource = null,
-        Func<string?>? accessTokenSource = null)
+        Func<string?>? accessTokenSource = null, Func<VersionsResponse?>? cachedVersions = null)
     {
         Homeserver = WithTrailingSlash(homeserver);
         _clientSource = clientSource ?? (() => SharedClient);
         _accessTokenSource = accessTokenSource;
+        _cachedVersions = cachedVersions;
     }
 
     public Uri Homeserver { get; }
@@ -80,7 +86,7 @@ internal sealed class MatrixTransport
             // when retrying after a token refresh
             using var request = CreateRequest(endpoint, body, bodyType);
             using var response = await _clientSource().SendAsync(request, timeoutSource.Token);
-            await EnsureSuccessAsync(response, request.Headers.Authorization?.Parameter, timeoutSource.Token);
+            await EnsureSuccessAsync(endpoint, response, request.Headers.Authorization?.Parameter, timeoutSource.Token);
 
             return await response.Content.ReadFromJsonAsync(TypeInfo<TResponse>(), timeoutSource.Token)
                    ?? throw new JsonException($"The homeserver returned an empty {typeof(TResponse).Name}.");
@@ -113,7 +119,7 @@ internal sealed class MatrixTransport
         return request;
     }
 
-    private static async Task EnsureSuccessAsync(HttpResponseMessage response, string? sentAccessToken,
+    private async Task EnsureSuccessAsync(Endpoint endpoint, HttpResponseMessage response, string? sentAccessToken,
         CancellationToken cancellationToken)
     {
         if (response.IsSuccessStatusCode)
@@ -143,8 +149,23 @@ internal sealed class MatrixTransport
             {
                 RetryAfter = retryAfter
             },
+            _ when IsMissingEndpoint(endpoint, response.StatusCode, errorCode) =>
+                new MatrixException(response.StatusCode, errorCode, error?.Error,
+                    ExplainMissing(endpoint.Feature!, error?.Error)) { RetryAfter = retryAfter },
             _ => new MatrixException(response.StatusCode, errorCode, error?.Error) { RetryAfter = retryAfter }
         };
+    }
+
+    // How the spec says a homeserver answers an endpoint it does not know. Only endpoints added after
+    // the minimum version can be missing for that reason, so only they get an explanation (D26)
+    private static bool IsMissingEndpoint(Endpoint endpoint, HttpStatusCode statusCode, string errorCode) =>
+        endpoint.Feature is not null && errorCode == MatrixErrorCodes.Unrecognized &&
+        statusCode is HttpStatusCode.NotFound or HttpStatusCode.MethodNotAllowed;
+
+    private string ExplainMissing(MatrixFeature feature, string? serverMessage)
+    {
+        var message = feature.ExplainMissing(_cachedVersions?.Invoke());
+        return serverMessage is null ? message : $"{message} Homeserver: {serverMessage}";
     }
 
     // The header is the current way (spec v1.10); retry_after_ms is the deprecated one older

@@ -51,7 +51,8 @@ and is not part of the repository.
 | `MatrixSession` | A logged-in session: homeserver, user and device IDs, tokens, expiry (D11) |
 | `LoginResponse` (internal) | Wire format of the `POST /login` response, turned into a `MatrixSession` |
 | `LoginFlow` | One entry of `GET /login`'s `flows` |
-| `VersionsResponse` | Response of `GET /versions`: supported spec versions and unstable features |
+| `VersionsResponse` | Response of `GET /versions`, read-only as it is cached: supported spec versions and unstable features, `MeetsMinimumVersion` (D24) and `Supports(feature)` (D26) |
+| `Transport.VersionsCache` (internal) | One instance's cached `/versions`, with its lifetime (D25) |
 | `IIdentifier` / `UserIdentifier` | User identifier objects (`m.id.user`) |
 | `MatrixException` | A Matrix error response (`errcode`, `error` as `ServerMessage`) or a non-Matrix HTTP failure; `RetryAfter` when the homeserver asks for a wait (D33) |
 | `MatrixUnknownTokenException` | `M_UNKNOWN_TOKEN`, with `SoftLogout` (D13, D21) |
@@ -1222,7 +1223,8 @@ path scheme. Every maintained homeserver implementation supports v1.x. matrix-js
 mautrix-python's bridges use the same floor.
 
 The endpoint layer does not refuse requests to older servers. Instead, `VersionsResponse`
-offers a check that apps can run, e.g. on a login screen. It answers whether the homeserver
+offers a check that apps can run, e.g. on a login screen: `MeetsMinimumVersion`. It answers
+whether the homeserver
 meets this library's minimum. A future server discovery step may fail early instead, as
 Element does before login.
 
@@ -1238,9 +1240,13 @@ Element does before login.
   refreshes them before continuing. There is no background refresh: the endpoint layer
   starts no hidden work (D20).
 - **The app can take control:**
+  - `GetVersionsAsync()` returns the cached response, fetching it first if there is none or it
+    has expired. The response is read-only, since every caller gets the same instance.
   - `RefreshVersionsAsync()` fetches immediately, e.g. at start-up or on the app's own
     schedule.
-  - The cache lifetime is configurable. `Timeout.InfiniteTimeSpan` disables automatic
+  - A failed request leaves the cache as it was, so the next call tries again.
+  - The cache lifetime is configurable as `VersionsCacheLifetime`. `TimeSpan.Zero` fetches on
+    every call. `Timeout.InfiniteTimeSpan` disables automatic
     refresh entirely, so no endpoint call ever waits for `/versions`; the app refreshes
     when it chooses.
 
@@ -1300,15 +1306,22 @@ it, the version that removed it if any, and its MSC's `.stable` flag if there is
 **The comparison rule:** a feature is supported if any advertised version satisfies
 `added ≤ version < removed`, or if the `.stable` flag is `true` in `unstable_features`.
 Versions are parsed into comparable numbers, `r0.x` counts as v1.0 as in ruma, and
-unparseable entries are ignored.
+unparseable entries are ignored. `MatrixVersion.TryParse` does the parsing, and
+`VersionsResponse.Supports(feature)` applies the rule, so an app holding a response can check
+it without another call.
 
 **Clear errors for missing endpoints.** When an endpoint with an entry is answered with 404 or
 405 `M_UNRECOGNIZED`, the library explains the likely cause:
 
 - The exception stays a `MatrixException` with the same `ErrorCode` and `ServerMessage`, so
-  existing handling keeps working. Only the message gains the explanation, e.g.
-  `GET /rooms/{roomId}/summary requires Matrix v1.15 or later, but the homeserver advertises
-  up to v1.12.`
+  existing handling keeps working. Only the message gains the explanation, followed by the
+  homeserver's own text, e.g. `Room summaries (GET /rooms/{roomId}/summary) requires Matrix
+  v1.15 or later, but the homeserver advertises up to v1.12, so it likely does not support
+  it. Homeserver: Unrecognized request`
+- Synapse answers an unknown path with 404 `M_UNRECOGNIZED`, which an integration test checks
+  on every run, against both the latest Synapse and v1.98.0.
+- Only endpoints with an entry get the explanation; a baseline endpoint answered this way is
+  left as it is, as its version cannot be the cause.
 - The explanation uses only the cached `/versions` (D25). The error path never fetches it,
   so a failure causes no extra request. Depending on the cache:
   - **cached, feature not advertised:** the message names the required and the advertised
@@ -1733,10 +1746,6 @@ await foreach (var sync in loop.RunAsync(cancellationToken))
 
 ### Current limitations
 
-- The homeserver compatibility design (§3.3) is only partly implemented. Features and
-  endpoints are declared (D26), but nothing uses them at runtime yet: `/versions` is not
-  cached, and there is no cache lifetime option, no minimum version check, no
-  `SupportsAsync` and no explanation of missing endpoints.
 - Only `m.id.user` identifiers are supported.
 - Encrypted rooms cannot be read: every message in them is an `EncryptedEvent` until
   end-to-end encryption is implemented.
@@ -1751,9 +1760,7 @@ await foreach (var sync in loop.RunAsync(cancellationToken))
 
 The feature roadmap lives in [TODO.md](../TODO.md). Near-term technical work:
 
-1. Homeserver compatibility (D24 to D26): the `/versions` cache and its lifetime option,
-   the minimum version check, `SupportsAsync` and clear errors for missing endpoints.
-2. Server discovery through `.well-known/matrix/client`.
+1. Server discovery through `.well-known/matrix/client`.
 
 Later considerations, not designed yet:
 

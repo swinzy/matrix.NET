@@ -102,11 +102,14 @@ public class MatrixClient : ISharedEndpoints
                 "ClientOptions.SessionRefreshHandler is set to save refreshed sessions. Set one, or set " +
                 "ClientOptions.AutoRefreshToken to false to manage refresh in the app.", nameof(options));
 
+        VersionsCache.ValidateLifetime(Options.VersionsCacheLifetime, nameof(options));
+
         var automaticDecompression = Options.AutomaticDecompression;
         _transport = new MatrixTransport(session.Homeserver,
             httpClientSource ?? (() => MatrixTransport.GetSharedClient(automaticDecompression)),
-            () => _session.AccessToken);
-        _shared = new SharedEndpoints(_transport);
+            () => _session.AccessToken, () => _shared.Versions.Cached);
+        _shared = new SharedEndpoints(ct => InvokeAsync<VersionsResponse>(Endpoints.Versions, ct),
+            Options.VersionsCacheLifetime, Options.TimeProvider);
     }
 
     /// <summary>The lifecycle state of the client.</summary>
@@ -151,10 +154,33 @@ public class MatrixClient : ISharedEndpoints
     /// <inheritdoc cref="MatrixServer.GetVersionsAsync"/>
     /// <remarks>
     /// Sent with the session's access token, so experimental features the homeserver offers only to
-    /// logged-in users are included.
+    /// logged-in users are included. Cached separately from any <see cref="MatrixServer"/>'s.
     /// </remarks>
-    public Task<VersionsResponse> GetVersionsAsync(CancellationToken cancellationToken = default) =>
-        InvokeAsync(Endpoints.Versions, _shared.GetVersionsAsync, cancellationToken);
+    public Task<VersionsResponse> GetVersionsAsync(CancellationToken cancellationToken = default)
+    {
+        // A cached answer must not make a dead client look usable (D21)
+        EnsureUsable();
+        return _shared.GetVersionsAsync(cancellationToken);
+    }
+
+    /// <inheritdoc cref="MatrixServer.RefreshVersionsAsync"/>
+    public Task<VersionsResponse> RefreshVersionsAsync(CancellationToken cancellationToken = default)
+    {
+        EnsureUsable();
+        return _shared.RefreshVersionsAsync(cancellationToken);
+    }
+
+    /// <inheritdoc cref="MatrixServer.SupportsAsync"/>
+    /// <remarks>
+    /// <see langword="false"/> is not proof that the feature is missing: a homeserver may ship it before
+    /// advertising the version that contains it. To be certain, call the endpoint and handle the error.
+    /// Uses this client's own cache, which includes features advertised only to logged-in users.
+    /// </remarks>
+    public Task<bool> SupportsAsync(MatrixFeature feature, CancellationToken cancellationToken = default)
+    {
+        EnsureUsable();
+        return _shared.SupportsAsync(feature, cancellationToken);
+    }
 
     /// <summary>
     /// Asks the homeserver who owns the session's access token.

@@ -61,7 +61,11 @@ if (homeserver is null || user is null || password is null)
 var server = new MatrixServer(new Uri(homeserver));
 
 await Check("versions", async () =>
-    Require((await server.GetVersionsAsync()).Versions.Count > 0, "no versions"));
+{
+    var versions = await server.GetVersionsAsync();
+    Require(versions.MeetsMinimumVersion, $"below the minimum: {string.Join(", ", versions.Versions)}");
+    Require(await server.SupportsAsync(MatrixFeature.TokenRefresh), "token refresh not advertised");
+});
 
 await Check("login flows", async () =>
     Require((await server.GetSupportedLoginTypesAsync()).Any(f => f.Type == "m.login.password"), "no password login"));
