@@ -14,7 +14,7 @@ public class SyncIntegrationTests(LoggedInClientFixture fixture)
     {
         Assert.SkipUnless(fixture.Settings.IsLocal, TestRooms.LocalOnly);
         var client = await fixture.GetClientAsync();
-        var roomId = await TestRooms.CreateAsync(client.Session, Ct);
+        var roomId = await TestRooms.CreateAsync(client, Ct);
         // Room creation alone adds several events, so a default-sized initial timeline could miss the message
         var onlyThisRoom = """{"room":{"rooms":[""" + $"\"{roomId}\"" + """],"timeline":{"limit":50}}}""";
         var since = (await client.SyncAsync(new SyncRequest { Filter = onlyThisRoom }, Ct)).NextBatch;
@@ -74,7 +74,7 @@ public class SyncIntegrationTests(LoggedInClientFixture fixture)
     {
         Assert.SkipUnless(fixture.Settings.IsLocal, TestRooms.LocalOnly);
         var client = await fixture.GetClientAsync();
-        var roomId = await TestRooms.CreateAsync(client.Session, Ct);
+        var roomId = await TestRooms.CreateAsync(client, Ct);
         var onlyThisRoom = """{"room":{"rooms":[""" + $"\"{roomId}\"" + """]}}""";
         var since = (await client.SyncAsync(new SyncRequest { Filter = onlyThisRoom }, Ct)).NextBatch;
         var loop = new SyncLoop(client, new SyncLoopOptions { Since = since, Filter = onlyThisRoom });

@@ -25,7 +25,7 @@ public class RoomMembershipIntegrationTests(LoggedInClientFixture fixture)
         var (client, other) = await ClientAndOtherAsync();
         try
         {
-            var (roomId, alias) = await TestRooms.CreatePublicAsync(other.Session, Ct);
+            var (roomId, alias) = await TestRooms.CreatePublicAsync(other, Ct);
 
             var joined = await client.JoinRoomAsync(alias, [TestRooms.ServerName(client.Session)], "matrix.NET join test", Ct);
 
@@ -45,7 +45,7 @@ public class RoomMembershipIntegrationTests(LoggedInClientFixture fixture)
         var (client, other) = await ClientAndOtherAsync();
         try
         {
-            var (roomId, _) = await TestRooms.CreatePublicAsync(other.Session, Ct);
+            var (roomId, _) = await TestRooms.CreatePublicAsync(other, Ct);
 
             Assert.Equal(roomId, await client.JoinRoomAsync(roomId, cancellationToken: Ct));
             await client.LeaveRoomAsync(roomId, cancellationToken: Ct);
@@ -78,7 +78,7 @@ public class RoomMembershipIntegrationTests(LoggedInClientFixture fixture)
     {
         Assert.SkipUnless(fixture.Settings.IsLocal, TestRooms.LocalOnly);
         var client = await fixture.GetClientAsync();
-        var roomId = await TestRooms.CreateAsync(client.Session, Ct);
+        var roomId = await TestRooms.CreateAsync(client, Ct);
         Assert.Contains(roomId, await client.GetJoinedRoomsAsync(Ct));
 
         await client.LeaveRoomAsync(roomId, "matrix.NET leave test", Ct);

@@ -53,11 +53,10 @@ public class MatrixServer : ISharedEndpoints
         VersionsCache.ValidateLifetime(Options.VersionsCacheLifetime, nameof(options));
 
         var automaticDecompression = Options.AutomaticDecompression;
+        _shared = new SharedEndpoints(FetchVersionsAsync, Options.VersionsCacheLifetime, Options.TimeProvider);
         _transport = new MatrixTransport(homeserver,
             httpClientSource ?? (() => MatrixTransport.GetSharedClient(automaticDecompression)),
             cachedVersions: () => _shared.Versions.Cached);
-        _shared = new SharedEndpoints(ct => _transport.SendAsync<VersionsResponse>(Endpoints.Versions, ct),
-            Options.VersionsCacheLifetime, Options.TimeProvider);
     }
 
     /// <summary>The options this server was created with.</summary>
@@ -127,6 +126,9 @@ public class MatrixServer : ISharedEndpoints
             ExpiresAt = response.ExpiresInMs is { } lifetime ? DateTimeOffset.UtcNow.AddMilliseconds(lifetime) : null
         };
     }
+
+    private Task<VersionsResponse> FetchVersionsAsync(CancellationToken cancellationToken) =>
+        _transport.SendAsync<VersionsResponse>(Endpoints.Versions, cancellationToken);
 
     internal record LoginFlowsResponse(List<LoginFlow>? Flows);
 }

@@ -105,11 +105,11 @@ public class MatrixClient : ISharedEndpoints
         VersionsCache.ValidateLifetime(Options.VersionsCacheLifetime, nameof(options));
 
         var automaticDecompression = Options.AutomaticDecompression;
+        _shared = new SharedEndpoints(ct => InvokeAsync<VersionsResponse>(Endpoints.Versions, ct),
+            Options.VersionsCacheLifetime, Options.TimeProvider);
         _transport = new MatrixTransport(session.Homeserver,
             httpClientSource ?? (() => MatrixTransport.GetSharedClient(automaticDecompression)),
             () => _session.AccessToken, () => _shared.Versions.Cached);
-        _shared = new SharedEndpoints(ct => InvokeAsync<VersionsResponse>(Endpoints.Versions, ct),
-            Options.VersionsCacheLifetime, Options.TimeProvider);
     }
 
     /// <summary>The lifecycle state of the client.</summary>
@@ -230,6 +230,41 @@ public class MatrixClient : ISharedEndpoints
     /// <param name="cancellationToken">Cancels the request.</param>
     public async Task<List<string>> GetJoinedRoomsAsync(CancellationToken cancellationToken = default) =>
         (await InvokeAsync<JoinedRoomsResponse>(Endpoints.JoinedRooms, cancellationToken)).JoinedRooms;
+
+    /// <summary>
+    /// Creates a room, with the user as its creator and first member (D35).
+    /// </summary>
+    /// <param name="request">Parameters; a private room with the homeserver's defaults when omitted.</param>
+    /// <param name="cancellationToken">Cancels the request.</param>
+    /// <returns>The ID of the new room.</returns>
+    /// <exception cref="ArgumentException">
+    /// <see cref="CreateRoomRequest.RoomAliasName"/> is a full alias rather than its local part, or an
+    /// invitee or initial state event is incomplete.
+    /// </exception>
+    /// <exception cref="MatrixException">
+    /// The homeserver refused, e.g. with <see cref="MatrixErrorCodes.RoomInUse"/> for an alias that is
+    /// taken, or <see cref="MatrixErrorCodes.UnsupportedRoomVersion"/>.
+    /// </exception>
+    public Task<string> CreateRoomAsync(CreateRoomRequest? request = null, CancellationToken cancellationToken = default)
+    {
+        request ??= new CreateRoomRequest();
+        // A full alias is an easy mistake, and the homeserver's error would not say what is wrong
+        if (request.RoomAliasName is { } alias && (alias.Length == 0 || alias.StartsWith('#') || alias.Contains(':')))
+            throw new ArgumentException(
+                $"RoomAliasName takes only the local part of the alias, e.g. \"foo\" for #foo:example.org, not \"{alias}\".",
+                nameof(request));
+        if (request.Invite?.Any(string.IsNullOrEmpty) == true)
+            throw new ArgumentException("Invite contains an empty user ID.", nameof(request));
+        if (request.InitialState?.Any(e => e is null || string.IsNullOrEmpty(e.Type) || e.Content is null || e.StateKey is null) == true)
+            throw new ArgumentException("Every initial state event needs a type, content and state key.", nameof(request));
+
+        return CreateAsync();
+
+        async Task<string> CreateAsync() =>
+            (await InvokeAsync(Endpoints.CreateRoom,
+                ct => _transport.SendAsync<CreateRoomRequest, CreateRoomResponse>(Endpoints.CreateRoom, request, ct),
+                cancellationToken)).RoomId;
+    }
 
     /// <summary>
     /// Joins a room, or accepts an invitation to it.
@@ -629,6 +664,8 @@ public class MatrixClient : ISharedEndpoints
     internal record JoinRequest(string? Reason);
 
     internal record JoinRoomResponse(string RoomId);
+
+    internal record CreateRoomResponse(string RoomId);
 
     internal record RefreshRequest(string RefreshToken);
 

@@ -43,7 +43,7 @@ and is not part of the repository.
 |---|---|
 | `MatrixServer` | Unauthenticated endpoints of a homeserver: supported login types, login and the shared endpoints |
 | `ServerOptions` | Options for `MatrixServer`: automatic decompression (D25) |
-| `MatrixClient` | Authenticated endpoints through a `MatrixSession`: `WhoAmIAsync`, `LogoutAsync`, `SyncAsync`, `GetJoinedRoomsAsync`, `JoinRoomAsync`, `LeaveRoomAsync`, `SendMessageAsync`, `SendEventAsync` and the shared endpoints so far; lifecycle `State` and `SessionChanged` (D14, D21); automatic token refresh (D12) |
+| `MatrixClient` | Authenticated endpoints through a `MatrixSession`: `WhoAmIAsync`, `LogoutAsync`, `SyncAsync`, `GetJoinedRoomsAsync`, `CreateRoomAsync`, `JoinRoomAsync`, `LeaveRoomAsync`, `SendMessageAsync`, `SendEventAsync` and the shared endpoints so far; lifecycle `State` and `SessionChanged` (D14, D21); automatic token refresh (D12) |
 | `ClientOptions` | Options for `MatrixClient`: automatic token refresh, refresh handler, automatic decompression |
 | `ISessionRefreshHandler` / `DiscardingSessionRefreshHandler` | Saves refreshed sessions before their tokens are used; the discarding one saves nothing (D23) |
 | `WhoAmIResponse` | Response of `GET /account/whoami` |
@@ -73,6 +73,7 @@ and is not part of the repository.
 | `Transport.MessageContentConverter` (internal) | Reads and writes `MessageContent` by `msgtype` without losing data (D30) |
 | `SyncRequest` / `SyncResponse` and its parts | Parameters and result of `SyncAsync`; room timelines modelled, the rest kept (D32) |
 | `RoomEvent` and subclasses | Timeline events: `MessageEvent`, `EncryptedEvent`, `RedactionEvent`, `RedactedRoomEvent`, `UnknownRoomEvent`, `InvalidRoomEvent` (D32) |
+| `CreateRoomRequest` / `InitialStateEvent` | Parameters of `CreateRoomAsync`; `RoomPresets` and `RoomVisibilities` hold the spec's values (D35) |
 | `SyncLoop` / `SyncLoopOptions` | Syncs continuously as an `IAsyncEnumerable<SyncResponse>`, retrying errors that may go away (D34) |
 | `SyncLoopState` / `SyncLoopStateChangedEventArgs` | `Stopped`, `Syncing` or `Retrying`, and the data of `SyncLoop.StateChanged` (D34) |
 | `Transport.RoomEventConverter` (internal) | Reads and writes `RoomEvent` by `type` without losing data (D32) |
@@ -1628,6 +1629,40 @@ fields every event has: `EventId`, `Type`, `Sender`, `OriginServerTs`, `StateKey
   is not needed to read messages. Keeping the rest whole avoids both a big model nobody uses
   yet and silently dropped data.
 - **One malformed or unfamiliar event must not break a sync response,** as in D30.
+
+#### D35. Room creation takes a parameter object, typed where simple and JSON where open-ended (Decided)
+
+`MatrixClient.CreateRoomAsync(CreateRoomRequest?)` sends `POST /createRoom` and returns the new
+room's ID. With no parameters it creates a private room with the homeserver's defaults.
+
+- **Parameters are an object,** `CreateRoomRequest`, for the same reason as `SyncRequest`
+  (D32): `/createRoom` has a dozen parameters and keeps gaining keys through
+  `creation_content`.
+- **Simple parameters are typed:** `Preset`, `Visibility`, `Name`, `Topic`, `RoomAliasName`,
+  `Invite`, `IsDirect` and `RoomVersion`.
+- **Open-ended ones are JSON:** `CreationContent` and `PowerLevelContentOverride` are
+  `JsonObject`s, and each `InitialStateEvent` has a `JsonObject` content. Their contents are
+  event content whose schemas belong to other modules, such as power levels; typing them
+  here would duplicate those models before they exist.
+- **Anything else goes in `AdditionalProperties`,** sent as it is, e.g. `invite_3pid`, which
+  needs identity server tokens and belongs with third-party invites.
+- **`Preset` and `Visibility` are strings,** with the spec's values as constants in
+  `RoomPresets` and `RoomVisibilities`, as with error codes (D1). A value from a newer spec
+  or a homeserver extension can then be sent without waiting for the library.
+- **Mistakes the homeserver would explain badly are caught before sending:**
+  - a full alias such as `#foo:example.org` in `RoomAliasName`, which takes only the local part;
+  - an empty invitee, or an initial state event without a type or content.
+
+  Everything else, such as a taken alias (`M_ROOM_IN_USE`) or an unsupported room version,
+  is left to the homeserver.
+
+**Why:**
+
+- **Typed where the shape is simple and stable,** so the common case needs no JSON: a name, a
+  preset and some invitees.
+- **JSON where the content belongs to another model,** as with event content in D30, so the
+  request does not wait for power levels or room creation content to be modelled, and adding
+  those models later adds overloads or properties without breaking this one.
 
 ### 3.5 Stateful components
 

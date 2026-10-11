@@ -20,6 +20,7 @@ namespace TeamBanana.MatrixDotNet.Transport;
 [JsonSerializable(typeof(MatrixClient.RefreshRequest))]
 [JsonSerializable(typeof(MatrixClient.JoinRequest))]
 [JsonSerializable(typeof(MatrixClient.LeaveRequest))]
+[JsonSerializable(typeof(CreateRoomRequest))]
 // Event content: raw, and the modelled message types (through MessageContentConverter)
 [JsonSerializable(typeof(JsonObject))]
 [JsonSerializable(typeof(MessageContent))]
@@ -33,6 +34,7 @@ namespace TeamBanana.MatrixDotNet.Transport;
 [JsonSerializable(typeof(MatrixClient.RefreshResponse))]
 [JsonSerializable(typeof(MatrixClient.JoinedRoomsResponse))]
 [JsonSerializable(typeof(MatrixClient.JoinRoomResponse))]
+[JsonSerializable(typeof(MatrixClient.CreateRoomResponse))]
 [JsonSerializable(typeof(MatrixClient.EmptyResponse))]
 [JsonSerializable(typeof(MatrixClient.SendEventResponse))]
 [JsonSerializable(typeof(SyncResponse))]

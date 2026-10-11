@@ -12,7 +12,7 @@ public class SendEventIntegrationTests(LoggedInClientFixture fixture)
     {
         Assert.SkipUnless(fixture.Settings.IsLocal, TestRooms.LocalOnly);
         var client = await fixture.GetClientAsync();
-        var roomId = await TestRooms.CreateAsync(client.Session, Ct);
+        var roomId = await TestRooms.CreateAsync(client, Ct);
 
         var first = await client.SendMessageAsync(roomId, new TextMessageContent("matrix.NET test message"), cancellationToken: Ct);
         var repeated = await client.SendMessageAsync(roomId, new TextMessageContent("matrix.NET test message"),
@@ -30,7 +30,7 @@ public class SendEventIntegrationTests(LoggedInClientFixture fixture)
     {
         Assert.SkipUnless(fixture.Settings.IsLocal, TestRooms.LocalOnly);
         var client = await fixture.GetClientAsync();
-        var roomId = await TestRooms.CreateAsync(client.Session, Ct);
+        var roomId = await TestRooms.CreateAsync(client, Ct);
 
         var result = await client.SendEventAsync(roomId, "com.example.matrixdotnet.test",
             new JsonObject { ["move"] = "e2e4" }, cancellationToken: Ct);
