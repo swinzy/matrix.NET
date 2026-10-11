@@ -58,7 +58,7 @@ and is not part of the repository.
 |---|---|
 | `MatrixServer` | Unauthenticated endpoints of a homeserver: supported login types, login and the shared endpoints; static `DiscoverAsync` (D36) |
 | `ServerOptions` | Options for `MatrixServer`: automatic decompression (D25) |
-| `MatrixClient` | Authenticated endpoints through a `MatrixSession`: `WhoAmIAsync`, `LogoutAsync`, `SyncAsync`, `GetJoinedRoomsAsync`, `CreateRoomAsync`, `JoinRoomAsync`, `LeaveRoomAsync`, `SendMessageAsync`, `SendEventAsync` and the shared endpoints so far; lifecycle `State` and `SessionChanged` (D14, D21); automatic token refresh (D12) |
+| `MatrixClient` | Authenticated endpoints through a `MatrixSession`: `WhoAmIAsync`, `LogoutAsync`, `SyncAsync`, `GetJoinedRoomsAsync`, `CreateRoomAsync`, `JoinRoomAsync`, `LeaveRoomAsync`, `SendMessageAsync`, `SendEventAsync`, `RedactEventAsync` and the shared endpoints so far; lifecycle `State` and `SessionChanged` (D14, D21); automatic token refresh (D12) |
 | `ClientOptions` | Options for `MatrixClient`: automatic token refresh, refresh handler, automatic decompression |
 | `ISessionRefreshHandler` / `DiscardingSessionRefreshHandler` | Saves refreshed sessions before their tokens are used; the discarding one saves nothing (D23) |
 | `WhoAmIResponse` | Response of `GET /account/whoami` |
@@ -1594,8 +1594,8 @@ decision of its own.
 
 #### D28. Transaction IDs are optional, UUIDs, and fixed for the whole call (Decided)
 
-Endpoints that the spec makes idempotent with a `{txnId}` in the path, such as sending an
-event, take an optional `string? transactionId`:
+Endpoints that the spec makes idempotent with a `{txnId}` in the path, such as sending or
+redacting an event, take an optional `string? transactionId`:
 
 ```csharp
 var result = await client.SendMessageAsync(roomId, content);                   // the library creates one

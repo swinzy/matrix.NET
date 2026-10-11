@@ -63,7 +63,7 @@ adds the rest of what it requires of Web, Desktop and Mobile clients.
 - [ ] Room history pagination (`GET /rooms/{roomId}/messages`)
 - [ ] Get single events and room state (`GET /rooms/{roomId}/event/{eventId}`, `/state`)
 - [ ] Send state events (`PUT /rooms/{roomId}/state/{eventType}/{stateKey}`)
-- [ ] Redactions (`PUT /rooms/{roomId}/redact/{eventId}/{txnId}`)
+- [x] Redactions (`PUT /rooms/{roomId}/redact/{eventId}/{txnId}`)
 - [x] Room creation (`POST /createRoom`)
 - [ ] Room aliases (`/directory/room/{roomAlias}`)
 - [ ] Room membership: invite, kick, ban, unban, knock, forget

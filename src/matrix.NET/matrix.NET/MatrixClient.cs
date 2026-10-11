@@ -407,6 +407,46 @@ public class MatrixClient : ISharedEndpoints
         return SendEventCoreAsync(roomId, eventType, content, transactionId, cancellationToken);
     }
 
+    /// <summary>
+    /// Redacts an event: the homeserver strips its content, keeping only what the room needs. It cannot
+    /// be undone. Others see a <see cref="RedactionEvent"/>, and the event itself becomes a
+    /// <see cref="RedactedRoomEvent"/> (D32).
+    /// </summary>
+    /// <remarks>
+    /// Anyone may redact their own events if the room allows them to send <c>m.room.redaction</c>; redacting
+    /// other users' events needs the room's <c>redact</c> power level. Otherwise the homeserver refuses
+    /// with <see cref="MatrixErrorCodes.Forbidden"/>.
+    /// </remarks>
+    /// <param name="roomId">The room ID, e.g. <c>!abc:example.org</c>.</param>
+    /// <param name="eventId">The ID of the event to redact, e.g. <c>$abc</c>.</param>
+    /// <param name="reason">Optional reason, shown to other members with the redaction.</param>
+    /// <param name="transactionId">
+    /// Makes retries safe; see <see cref="SendMessageAsync"/>. Omit it to have one created.
+    /// </param>
+    /// <param name="cancellationToken">Cancels the request.</param>
+    /// <returns>The ID of the redaction event, and the transaction ID used.</returns>
+    public Task<SendEventResult> RedactEventAsync(string roomId, string eventId, string? reason = null,
+        string? transactionId = null, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(roomId);
+        ArgumentException.ThrowIfNullOrEmpty(eventId);
+        if (transactionId is not null)
+            ArgumentException.ThrowIfNullOrEmpty(transactionId);
+
+        // Bound once, so a retry after a token refresh reuses the same transaction ID (D28)
+        var id = transactionId ?? MatrixDotNet.TransactionId.New();
+        var endpoint = Endpoints.Redact.Bind(roomId, eventId, id);
+        return RedactAsync();
+
+        async Task<SendEventResult> RedactAsync()
+        {
+            var response = await InvokeAsync(endpoint,
+                ct => _transport.SendAsync<RedactRequest, SendEventResponse>(endpoint, new RedactRequest(reason), ct),
+                cancellationToken);
+            return new SendEventResult(response.EventId, id);
+        }
+    }
+
     private Task<SendEventResult> SendEventCoreAsync(string roomId, string eventType, JsonNode? content,
         string? transactionId, CancellationToken cancellationToken)
     {
@@ -660,6 +700,8 @@ public class MatrixClient : ISharedEndpoints
     internal record JoinedRoomsResponse(List<string> JoinedRooms);
 
     internal record LeaveRequest(string? Reason);
+
+    internal record RedactRequest(string? Reason);
 
     internal record JoinRequest(string? Reason);
 

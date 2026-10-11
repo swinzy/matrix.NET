@@ -21,6 +21,7 @@ namespace TeamBanana.MatrixDotNet.Transport;
 [JsonSerializable(typeof(MatrixClient.JoinRequest))]
 [JsonSerializable(typeof(MatrixClient.LeaveRequest))]
 [JsonSerializable(typeof(CreateRoomRequest))]
+[JsonSerializable(typeof(MatrixClient.RedactRequest))]
 // Event content: raw, and the modelled message types (through MessageContentConverter)
 [JsonSerializable(typeof(JsonObject))]
 [JsonSerializable(typeof(MessageContent))]

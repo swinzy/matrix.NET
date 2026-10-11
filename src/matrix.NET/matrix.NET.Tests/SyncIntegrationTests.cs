@@ -28,10 +28,11 @@ public class SyncIntegrationTests(LoggedInClientFixture fixture)
         Assert.Equal(client.UserId, message.Sender);
 
         // A later redaction arrives as its own event
-        await TestRooms.RedactAsync(client.Session, roomId, sent.EventId, Ct);
+        await client.RedactEventAsync(roomId, sent.EventId, "matrix.NET redaction test", cancellationToken: Ct);
         sync = await client.SyncAsync(new SyncRequest { Since = sync.NextBatch, Filter = onlyThisRoom }, Ct);
         var redaction = Assert.Single(Events(sync, roomId).OfType<RedactionEvent>());
         Assert.Equal(sent.EventId, redaction.Redacts);
+        Assert.Equal("matrix.NET redaction test", redaction.Reason);
 
         await client.SendEventAsync(roomId, "m.room.encrypted",
             new JsonObject { ["algorithm"] = "m.megolm.v1.aes-sha2", ["ciphertext"] = "AwgAEnAC", ["session_id"] = "s" },
