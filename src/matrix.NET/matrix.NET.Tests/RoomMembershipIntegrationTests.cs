@@ -63,13 +63,13 @@ public class RoomMembershipIntegrationTests(LoggedInClientFixture fixture)
         Assert.SkipUnless(settings.IsLocal, TestRooms.LocalOnly);
         Assert.SkipWhen(settings.OtherUser is null, "No second account configured; restart tools/synapse/synapse.sh");
         var client = await fixture.GetClientAsync();
-        var session = await new MatrixServer(new Uri(settings.Homeserver!)).LoginAsync(new LoginRequest
+        var session = (await new MatrixServer(new Uri(settings.Homeserver!)).LoginAsync(new LoginRequest
         {
             Type = "m.login.password",
             Identifier = new UserIdentifier { User = settings.OtherUser! },
             Password = settings.Password,
             RefreshToken = false
-        }, Ct);
+        }, Ct)).Session;
         return (client, new MatrixClient(session));
     }
 

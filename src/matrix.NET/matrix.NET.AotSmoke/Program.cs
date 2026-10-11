@@ -88,11 +88,11 @@ MatrixClient? client = null;
 var refreshed = 0;
 await Check("login and whoami", async () =>
 {
-    var session = await server.LoginAsync(new LoginRequest
+    var session = (await server.LoginAsync(new LoginRequest
     {
         Type = "m.login.password", Identifier = new UserIdentifier { User = user }, Password = password,
         InitialDeviceDisplayName = "matrix.NET AOT smoke test"
-    });
+    })).Session;
     client = new MatrixClient(session, new ClientOptions
     {
         SessionRefreshHandler = new CountingHandler(() => refreshed++)

@@ -30,6 +30,7 @@ namespace TeamBanana.MatrixDotNet.Transport;
 [JsonSerializable(typeof(MatrixServer.LoginFlowsResponse))]
 [JsonSerializable(typeof(LoginResponse))]
 [JsonSerializable(typeof(VersionsResponse))]
+[JsonSerializable(typeof(DiscoveryInformation))]
 [JsonSerializable(typeof(WhoAmIResponse))]
 [JsonSerializable(typeof(MatrixClient.RefreshResponse))]
 [JsonSerializable(typeof(MatrixClient.JoinedRoomsResponse))]

@@ -18,6 +18,7 @@ This is not a guide. There is (not yet) a dedicated usage guide available.
 5. [Future plans](#5-future-plans)
 6. [Appendix: session design in other SDKs](#appendix-session-design-in-other-sdks)
 7. [Appendix: sync loops in other SDKs](#appendix-sync-loops-in-other-sdks)
+8. [Appendix: server discovery in other SDKs](#appendix-server-discovery-in-other-sdks)
 
 ## 1. Project layout
 
@@ -41,7 +42,7 @@ and is not part of the repository.
 
 | Type | Role |
 |---|---|
-| `MatrixServer` | Unauthenticated endpoints of a homeserver: supported login types, login and the shared endpoints |
+| `MatrixServer` | Unauthenticated endpoints of a homeserver: supported login types, login and the shared endpoints; static `DiscoverAsync` (D36) |
 | `ServerOptions` | Options for `MatrixServer`: automatic decompression (D25) |
 | `MatrixClient` | Authenticated endpoints through a `MatrixSession`: `WhoAmIAsync`, `LogoutAsync`, `SyncAsync`, `GetJoinedRoomsAsync`, `CreateRoomAsync`, `JoinRoomAsync`, `LeaveRoomAsync`, `SendMessageAsync`, `SendEventAsync` and the shared endpoints so far; lifecycle `State` and `SessionChanged` (D14, D21); automatic token refresh (D12) |
 | `ClientOptions` | Options for `MatrixClient`: automatic token refresh, refresh handler, automatic decompression |
@@ -49,7 +50,11 @@ and is not part of the repository.
 | `WhoAmIResponse` | Response of `GET /account/whoami` |
 | `LoginRequest` | Body of `POST /login` |
 | `MatrixSession` | A logged-in session: homeserver, user and device IDs, tokens, expiry (D11) |
-| `LoginResponse` (internal) | Wire format of the `POST /login` response, turned into a `MatrixSession` |
+| `LoginResponse` (internal) | Wire format of the `POST /login` response, turned into a `LoginResult` |
+| `LoginResult` | Result of `LoginAsync`: the `MatrixSession` and the homeserver's `well_known`, not applied (D36) |
+| `ServerDiscovery` / `DiscoveryInformation` / `ServerInformation` | Result of `DiscoverAsync`, and discovery information as received (D36) |
+| `MatrixDiscoveryException` / `DiscoveryFailureKind` | Discovery failed: ask for the homeserver (`FailPrompt`) or stop (`FailError`) (D36) |
+| `Transport.Discovery` (internal) | The discovery steps, including taking the hostname from a server name (D36) |
 | `LoginFlow` | One entry of `GET /login`'s `flows` |
 | `VersionsResponse` | Response of `GET /versions`, read-only as it is cached: supported spec versions and unstable features, `MeetsMinimumVersion` (D24) and `Supports(feature)` (D26) |
 | `Transport.VersionsCache` (internal) | One instance's cached `/versions`, with its lifetime (D25) |
@@ -188,6 +193,9 @@ written twice. Adding `m.id.thirdparty` or `m.id.phone` means adding a class and
 - **`SourceRulesTests`** checks rules in the library's source that neither the compiler nor
   other tests can see, such as not using `MatrixJsonContext.Default` (D31). It is explicit, as
   its result only changes with the source; run it before releases and after larger changes.
+- **`DiscoveryIntegrationTests.DiscoverAsync_FindsMatrixOrg`** discovers matrix.org for real
+  (D36), as the local Synapse serves no HTTPS. It is explicit, as it depends on a server
+  outside the test setup.
 - **`SpecConformanceTests.Endpoints_MatchTheSpec`** compares every declared endpoint with the
   spec's OpenAPI definition (D26). It downloads the 2.5 MB definition, so it is explicit. Run
   it after adding endpoints and before releases. When the spec baseline changes, update its
@@ -1074,6 +1082,89 @@ Design:
 would then have to recreate the client from its stored session just to detect the unlock,
 contradicting the spec's intent that the same session waits for it.
 
+#### D36. Server discovery follows the spec's steps and returns its findings; nothing is applied silently (Decided)
+
+`MatrixServer.DiscoverAsync(userIdOrServerName)` is a static method that finds the homeserver
+through `/.well-known/matrix/client` and returns a `ServerDiscovery`. The app then creates a
+`MatrixServer` with `discovery.Homeserver`. It does not return a `MatrixServer` itself: D8
+keeps construction to constructors, and discovery is a separate step that the spec says
+should only be done at login.
+
+```csharp
+var discovery = await MatrixServer.DiscoverAsync("@alice:example.org");
+if (discovery is null)
+    /* no discovery information: ask for the homeserver URL, or try https://example.org */;
+var server = new MatrixServer(discovery.Homeserver);
+```
+
+The steps and their outcomes follow the spec's terms:
+
+| Outcome | When | Result |
+|---|---|---|
+| IGNORE | `404` | `null`; the app decides what to try next |
+| FAIL_PROMPT | another error status, a network failure or timeout, a body that is not a JSON object, or no `m.homeserver.base_url` | `MatrixDiscoveryException` with `Kind = FailPrompt`: ask the user for the homeserver URL |
+| FAIL_ERROR | `base_url` is not an absolute `http` or `https` URL, or nothing answers `GET /versions` there | `MatrixDiscoveryException` with `Kind = FailError`: stop the login |
+| Success | `GET /versions` answered | `ServerDiscovery` with `Homeserver`, `Versions`, `IdentityServer` and `Information` |
+
+- **The hostname drops the port.** The spec says: "Extract the hostname from the server name
+  as described by the grammar", where the grammar is `server_name = hostname [ ":" port ]`,
+  and then "Make a GET request to `https://hostname/.well-known/matrix/client`". So
+  `@alice:example.org:8448` is looked up at `https://example.org/.well-known/matrix/client`.
+  The wording "Extract the hostname from the server name" has been there since r0.4.0; v1.11
+  added "as described by the grammar" (matrix-spec #1862, a clarification). Every SDK
+  researched keeps the port instead (see the appendix), and none of their code or history
+  explains why. A server name with a port often names a federation port such as 8448, while
+  clients find the file over HTTPS on the default port.
+- **No fallback on 404.** Three of the SDKs researched, or the app on top of them, try the
+  server name as the homeserver URL; the library leaves that to the app, which knows whether
+  to ask the user first.
+- **A network failure is FAIL_PROMPT,** as in matrix-js-sdk: the discovery information could
+  not be read, so the user is asked rather than stopped. The cause is the inner exception.
+  The caller's own cancellation is not a discovery failure and throws as usual.
+- **The homeserver is validated with `GET /versions`,** as the spec asks (SHOULD), but an old
+  version is not a failure (D24); `Versions` is returned so the app can check
+  `MeetsMinimumVersion`.
+- **The identity server is read but not validated.** The spec asks clients to validate it
+  with `GET /_matrix/identity/v2`; the library does not, because it does not support identity
+  servers yet. A missing or invalid `base_url` is reported in `IdentityServerFailure`
+  (`FailPrompt` or `FailError`, as the spec's steps say) without failing the homeserver,
+  which matches what matrix-js-sdk returns. **When identity server support is added, it must
+  validate discovered identity servers**; this is recorded in the limitations, at the code
+  that reads them, and in `TODO.md`.
+- **Redirects are followed,** which `HttpClient` does by default. The unreleased v1.20 adds
+  that 30x redirects SHOULD be followed.
+- **The body is read as JSON whatever its content type,** as some servers serve the file as
+  `text/plain`.
+- **The file is requested through the transport like any endpoint,** declared as
+  `Endpoints.WellKnownClient` and checked against the spec, with the hostname as its base URL.
+
+**The login response's `well_known` is returned, not applied.** `LoginAsync` returns a
+`LoginResult` with the `Session` and `WellKnown`, a `DiscoveryInformation` like the one from
+discovery. The session keeps the homeserver the login went to. An app that follows the spec's
+advice to reconfigure itself does so explicitly:
+
+```csharp
+var login = await server.LoginAsync(request);
+var session = login.Session;
+if (login.WellKnown?.Homeserver?.BaseUrl is { } baseUrl)
+    session = session with { Homeserver = new Uri(baseUrl) };   // validate first if wanted
+```
+
+A malformed `well_known` is dropped (`WellKnown` is `null`) rather than failing a login that
+succeeded.
+
+**Why:**
+
+- **Explicit results over silent changes.** Switching the homeserver to an unvalidated URL
+  from a login response, as matrix-rust-sdk does by default, makes a misconfiguration hard to
+  trace. Returning it keeps the decision, and any validation, with the app, as matrix-js-sdk
+  does.
+- **The spec's outcomes are kept apart** because they call for different UI: IGNORE and
+  FAIL_PROMPT ask the user, FAIL_ERROR stops. A single error type with a `Kind` keeps that
+  distinction without a hierarchy of exceptions per cause, unlike mautrix-python.
+- **`LoginResult` rather than a field on `MatrixSession`:** the session is what the app
+  persists, and discovery information is a one-off hint about configuration.
+
 #### D23. Refreshed sessions are saved through an awaited hook (Decided)
 
 ```csharp
@@ -1225,9 +1316,8 @@ mautrix-python's bridges use the same floor.
 
 The endpoint layer does not refuse requests to older servers. Instead, `VersionsResponse`
 offers a check that apps can run, e.g. on a login screen: `MeetsMinimumVersion`. It answers
-whether the homeserver
-meets this library's minimum. A future server discovery step may fail early instead, as
-Element does before login.
+whether the homeserver meets this library's minimum. Server discovery (D36) does not refuse
+older homeservers either; it returns the `/versions` it validated with, so the app can check.
 
 #### D25. `/versions` is fetched lazily and cached with an expiry the app controls (Decided)
 
@@ -1787,15 +1877,14 @@ await foreach (var sync in loop.RunAsync(cancellationToken))
 - `/sync` models only room timelines (D32).
 - XML documentation is generated and shipped, so IDEs show it. Warning CS1591, for missing
   documentation, is silenced until all public members are documented.
-- `well_known` in the login response and the deprecated `home_server` field are not
-  modelled.
-- There is no server discovery (`.well-known`) yet. The homeserver URL must be known.
+- The deprecated `home_server` field of the login response is not modelled.
+- **Discovered identity servers are not validated** (D36). The spec asks clients to check one
+  with `GET /_matrix/identity/v2` before using it; the library does not, because it does not
+  support identity servers yet. Adding that support must add the check.
 
 ## 5. Future plans
 
-The feature roadmap lives in [TODO.md](../TODO.md). Near-term technical work:
-
-1. Server discovery through `.well-known/matrix/client`.
+The feature roadmap lives in [TODO.md](../TODO.md).
 
 Later considerations, not designed yet:
 
@@ -1850,3 +1939,16 @@ Notes:
   repeats it).
 - **Retry policies differ widely,** from none to 320 seconds, but all retry indefinitely
   except for an invalid token.
+
+## Appendix: server discovery in other SDKs
+
+Summary of source research from October 2026, for D36.
+
+| SDK | Entry | On 404 | Other failures | Validates with `/versions` | Port in the lookup | Identity server | Login `well_known` |
+|---|---|---|---|---|---|---|---|
+| matrix-rust-sdk | Server name given to `ClientBuilder`; discovered during `build()` | Not told apart | One mode fails; `server_name_or_homeserver_url` falls back to the server name as the homeserver URL | Only the fallback URL, not the discovered one | Kept | Ignored | Applied by default, unvalidated (`respect_login_well_known`) |
+| matrix-js-sdk | `AutoDiscovery.findClientConfig(domain)` | `PROMPT` state | Never throws: returns the spec's states (`FAIL_PROMPT`, `FAIL_ERROR`) with a reason | Yes, and requires a supported version | Kept | Validated | Returned in the raw response |
+| Element Web | Through matrix-js-sdk | The server picker tries `https://` + the server name | — | — | Kept | — | Applied by the app, unvalidated |
+| mautrix-python | Static `discover(domain)` | Returns `None` | A `WellKnownError` subclass per cause | Yes | Kept | Ignored | Opt-in (`update_hs_url`, off by default) |
+| matrix-nio | Raw `discovery_info()` against the client's own homeserver | — | — | No | — | Returned | Ignored |
+| Trixnity | `serverDiscovery()` extension | Falls back to the server name | Same fallback for any failure | Yes | Kept | Ignored | Modelled, not used |

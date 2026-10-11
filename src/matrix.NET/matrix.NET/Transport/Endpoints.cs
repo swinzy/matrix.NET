@@ -9,6 +9,10 @@ internal static class Endpoints
     public static readonly Endpoint Versions =
         Endpoint.Baseline(HttpMethod.Get, "_matrix/client/versions", AuthRequirement.Optional);
 
+    // Served at the server name's hostname rather than the homeserver (D36)
+    public static readonly Endpoint WellKnownClient =
+        Endpoint.Baseline(HttpMethod.Get, ".well-known/matrix/client", AuthRequirement.None);
+
     public static readonly Endpoint LoginFlows =
         Endpoint.Baseline(HttpMethod.Get, "_matrix/client/v3/login", AuthRequirement.None);
 

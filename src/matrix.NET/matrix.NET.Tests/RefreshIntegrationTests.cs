@@ -17,13 +17,13 @@ public class RefreshIntegrationTests
         Assert.SkipUnless(settings.IsLocal, "Needs the local Synapse's short token lifetime");
 
         // A device of its own, deleted by the logout at the end
-        var session = await new MatrixServer(new Uri(settings.Homeserver!)).LoginAsync(new LoginRequest
+        var session = (await new MatrixServer(new Uri(settings.Homeserver!)).LoginAsync(new LoginRequest
         {
             Type = "m.login.password",
             Identifier = new UserIdentifier { User = settings.User! },
             Password = settings.Password,
             InitialDeviceDisplayName = "matrix.NET refresh test"
-        }, Ct);
+        }, Ct)).Session;
         Assert.NotNull(session.RefreshToken);
         var expiresAt = Assert.NotNull(session.ExpiresAt);
         Assert.InRange(expiresAt - DateTimeOffset.UtcNow, TimeSpan.Zero, TimeSpan.FromSeconds(30));

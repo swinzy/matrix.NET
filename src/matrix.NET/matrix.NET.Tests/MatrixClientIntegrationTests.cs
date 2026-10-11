@@ -36,14 +36,14 @@ public class MatrixClientIntegrationTests(LoggedInClientFixture fixture)
     {
         var settings = fixture.Settings;
         Assert.SkipUnless(settings.IsConfigured, TestSettings.NotConfiguredMessage);
-        var session = await new MatrixServer(new Uri(settings.Homeserver!)).LoginAsync(new LoginRequest
+        var session = (await new MatrixServer(new Uri(settings.Homeserver!)).LoginAsync(new LoginRequest
         {
             Type = "m.login.password",
             Identifier = new UserIdentifier { User = settings.User! },
             Password = settings.Password,
             InitialDeviceDisplayName = "matrix.NET logout test",
             RefreshToken = false
-        }, TestContext.Current.CancellationToken);
+        }, TestContext.Current.CancellationToken)).Session;
         var client = new MatrixClient(session, new ClientOptions { AutoRefreshToken = false });
 
         await client.LogoutAsync(TestContext.Current.CancellationToken);

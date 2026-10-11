@@ -33,7 +33,7 @@ public sealed class LoggedInClientFixture
         var server = new MatrixServer(new Uri(Settings.Homeserver!));
 
         // Not tied to any single test's cancellation, as the result is shared
-        var session = await server.LoginAsync(new LoginRequest
+        var session = (await server.LoginAsync(new LoginRequest
         {
             Type = "m.login.password",
             Identifier = new UserIdentifier { User = Settings.User! },
@@ -42,7 +42,7 @@ public sealed class LoggedInClientFixture
             InitialDeviceDisplayName = "matrix.NET integration tests",
             // A non-expiring token keeps the session valid for the whole run
             RefreshToken = false
-        });
+        })).Session;
 
         return new MatrixClient(session, new ClientOptions { AutoRefreshToken = false });
     }

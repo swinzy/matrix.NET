@@ -38,7 +38,7 @@ adds the rest of what it requires of Web, Desktop and Mobile clients.
 
 ### Core API
 
-- [ ] Server discovery (`/.well-known/matrix/client`)
+- [x] Server discovery (`/.well-known/matrix/client`)
 - [x] Supported spec versions (`GET /versions`)
 - [x] Compatibility with older homeservers: a minimum supported spec version, feature
       detection through `/versions`, `unstable_features` and `/capabilities`, and clear errors
@@ -95,6 +95,8 @@ adds the rest of what it requires of Web, Desktop and Mobile clients.
 
 - [ ] Account registration (`POST /register`, User-Interactive Authentication)
 - [ ] Account management: change password, deactivate account, third-party identifiers
+- [ ] Identity servers (Identity Service API); must also validate identity servers found by
+      server discovery with `GET /_matrix/identity/v2`, which discovery skips for now (D36)
 - [ ] Profiles: display name and avatar (`/profile/{userId}`)
 - [ ] Client Config (account data)
 - [ ] Device Management

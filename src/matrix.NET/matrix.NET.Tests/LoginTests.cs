@@ -85,7 +85,7 @@ public class LoginTests
             """{"user_id":"@cheeky_monkey:matrix.org","access_token":"abc123","refresh_token":"def456","expires_in_ms":60000,"device_id":"GHTYAJCE","home_server":"matrix.org"}""");
 
         var before = DateTimeOffset.UtcNow;
-        var session = await CreateServer(handler).LoginAsync(PasswordLogin(), TestContext.Current.CancellationToken);
+        var session = (await CreateServer(handler).LoginAsync(PasswordLogin(), TestContext.Current.CancellationToken)).Session;
         var after = DateTimeOffset.UtcNow;
 
         Assert.Equal(new Uri("https://matrix.example.org/"), session.Homeserver);
@@ -102,7 +102,7 @@ public class LoginTests
     {
         var handler = new StubHttpMessageHandler(HttpStatusCode.OK, MinimalResponse);
 
-        var session = await CreateServer(handler).LoginAsync(PasswordLogin(), TestContext.Current.CancellationToken);
+        var session = (await CreateServer(handler).LoginAsync(PasswordLogin(), TestContext.Current.CancellationToken)).Session;
 
         Assert.Null(session.RefreshToken);
         Assert.Null(session.ExpiresAt);

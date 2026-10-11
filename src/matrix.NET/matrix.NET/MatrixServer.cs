@@ -106,16 +106,53 @@ public class MatrixServer : ISharedEndpoints
     }
 
     /// <summary>
-    /// Logs in and returns the new session. The app is responsible for saving it (D23).
+    /// Finds the homeserver of a user ID or server name through <c>/.well-known/matrix/client</c>, and
+    /// checks that it answers <c>GET /versions</c> (D36). Meant for the login screen; the spec says
+    /// discovery should only be done at login.
+    /// </summary>
+    /// <remarks>
+    /// The lookup goes to the server name's hostname over HTTPS, without any port, as the spec says:
+    /// for <c>@alice:example.org:8448</c>, <c>https://example.org/.well-known/matrix/client</c>.
+    /// </remarks>
+    /// <param name="userIdOrServerName">A user ID, e.g. <c>@alice:example.org</c>, or a server name, e.g. <c>example.org</c>.</param>
+    /// <param name="cancellationToken">Cancels the requests.</param>
+    /// <returns>
+    /// The homeserver found, or <see langword="null"/> if the server name publishes no discovery
+    /// information (404). What to do then is the app's choice, e.g. asking for the homeserver URL, or
+    /// trying <c>https://</c> and the server name as one.
+    /// </returns>
+    /// <exception cref="ArgumentException">The input is not a user ID or server name.</exception>
+    /// <exception cref="MatrixDiscoveryException">
+    /// Discovery failed; <see cref="MatrixDiscoveryException.Kind"/> says whether to ask the user for
+    /// the homeserver URL or to stop.
+    /// </exception>
+    public static Task<ServerDiscovery?> DiscoverAsync(string userIdOrServerName,
+        CancellationToken cancellationToken = default) =>
+        Discovery.DiscoverAsync(userIdOrServerName, null, cancellationToken);
+
+    /// <inheritdoc cref="DiscoverAsync(string, CancellationToken)"/>
+    /// <param name="userIdOrServerName">A user ID, e.g. <c>@alice:example.org</c>, or a server name, e.g. <c>example.org</c>.</param>
+    /// <param name="httpClient">A long-lived client for both requests, owned and disposed by the caller.</param>
+    /// <param name="cancellationToken">Cancels the requests.</param>
+    public static Task<ServerDiscovery?> DiscoverAsync(string userIdOrServerName, HttpClient httpClient,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(httpClient);
+        return Discovery.DiscoverAsync(userIdOrServerName, () => httpClient, cancellationToken);
+    }
+
+    /// <summary>
+    /// Logs in and returns the new session, with any discovery information the homeserver sent. The
+    /// app is responsible for saving the session (D23).
     /// </summary>
     /// <param name="request">Login type and credentials.</param>
     /// <param name="cancellationToken">Cancels the request.</param>
-    public async Task<MatrixSession> LoginAsync(LoginRequest request, CancellationToken cancellationToken = default)
+    public async Task<LoginResult> LoginAsync(LoginRequest request, CancellationToken cancellationToken = default)
     {
         var response = await _transport.SendAsync<LoginRequest, LoginResponse>(Endpoints.Login, request,
             cancellationToken);
 
-        return new MatrixSession
+        var session = new MatrixSession
         {
             Homeserver = _transport.Homeserver,
             UserId = response.UserId,
@@ -125,6 +162,7 @@ public class MatrixServer : ISharedEndpoints
             // The spec gives a relative lifetime, which is meaningless once persisted (D11)
             ExpiresAt = response.ExpiresInMs is { } lifetime ? DateTimeOffset.UtcNow.AddMilliseconds(lifetime) : null
         };
+        return new LoginResult(session, DiscoveryInformation.TryRead(response.WellKnown));
     }
 
     private Task<VersionsResponse> FetchVersionsAsync(CancellationToken cancellationToken) =>
