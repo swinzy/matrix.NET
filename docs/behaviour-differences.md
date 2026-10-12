@@ -26,6 +26,7 @@ the feature.
 - [A failed token refresh takes `soft_logout` from the refresh response](#a-failed-token-refresh-takes-soft_logout-from-the-refresh-response)
 - [Feature detection uses version ranges](#feature-detection-uses-version-ranges)
 - [Rate-limited requests are retried a few times, for short waits only](#rate-limited-requests-are-retried-a-few-times-for-short-waits-only)
+- [Waits longer than three seconds are reported to the app](#waits-longer-than-three-seconds-are-reported-to-the-app)
 
 ## Server discovery looks up the hostname without the port
 
@@ -165,8 +166,40 @@ limits are options, and retrying can be turned off (D37).
   succeeds whenever it eventually can, and the app never handles a rate limit itself.
 - Not retrying in the HTTP layer, as matrix-js-sdk and mautrix-python do, keeps every call's
   duration predictable and leaves all timing to the app.
-- matrix.NET takes short waits itself and leaves long ones to the app: a call stalls for at
+- matrix.NET takes short waits itself and leaves long ones to the app: a call waits for at
   most about three minutes with the defaults, and a five-minute login limit, as Synapse sets
-  after repeated failed logins, reaches the app at once.
+  after repeated failed logins, reaches the app at once. Any wait that takes a call past
+  three seconds is reported to the app as it starts (see the next entry).
 - An app that prefers either of the other behaviours can set `MaxRateLimitRetries` to 0 and
   retry itself, or raise `MaxRateLimitRetries` and `MaxRateLimitWait`.
+
+## Waits longer than three seconds are reported to the app
+
+**Spec:** says nothing about how a client shows that it is waiting. It only asks clients to
+wait when rate-limited, so this is a library's own choice.
+
+**matrix.NET:** every method that sends requests, except `SyncAsync`, takes an optional
+`IProgress<RequestWait>`. Once a call has taken, or a rate-limit wait would take it, longer
+than three seconds, the library reports the reason, how long the call has taken, how long the
+wait will last when known, and whether cancelling now would leave the outcome unknown. The
+threshold is an option (D38).
+
+**Other SDKs:**
+
+| SDK | What the app sees while the SDK waits out a rate limit | Where |
+|---|---|---|
+| matrix-rust-sdk | A log entry (`tracing` warning); the send queue shows a send as pending | `http_client/native.rs`, `send_queue/mod.rs` |
+| matrix-js-sdk | A debug log entry from the event scheduler; the event stays in `SENDING`, where it cannot be cancelled | `scheduler.ts`, `client.ts` (`cancelPendingEvent`) |
+| matrix-nio | The `429` response, passed to the app's response callbacks before the SDK waits | `client/async_client.py` (`_send`) |
+| mautrix-python | No wait: rate-limited requests are not retried | `api.py` (`request`) |
+| Trixnity | A log entry (warning) | `MatrixClientServerApiBaseClient.kt` |
+
+**Trade-off:**
+
+- Logging, as most SDKs do, keeps every method's signature unchanged, and fits SDKs whose
+  send queues already show the state of each message elsewhere.
+- matrix.NET reports per call, so an app can tie each wait to the action the user took and
+  say how long it will be. The cost is one more optional parameter on each method, before
+  the `CancellationToken`, so a token passed by position must be named.
+- An app that does not want reports passes no `IProgress`, or sets `WaitReportThreshold` to
+  `Timeout.InfiniteTimeSpan`.

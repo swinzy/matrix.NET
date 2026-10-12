@@ -6,9 +6,12 @@ namespace TeamBanana.MatrixDotNet.Transport;
 /// </summary>
 internal interface ISharedEndpoints
 {
-    Task<VersionsResponse> GetVersionsAsync(CancellationToken cancellationToken = default);
+    Task<VersionsResponse> GetVersionsAsync(IProgress<RequestWait>? progress = null,
+        CancellationToken cancellationToken = default);
 
-    Task<VersionsResponse> RefreshVersionsAsync(CancellationToken cancellationToken = default);
+    Task<VersionsResponse> RefreshVersionsAsync(IProgress<RequestWait>? progress = null,
+        CancellationToken cancellationToken = default);
 
-    Task<bool> SupportsAsync(MatrixFeature feature, CancellationToken cancellationToken = default);
+    Task<bool> SupportsAsync(MatrixFeature feature, IProgress<RequestWait>? progress = null,
+        CancellationToken cancellationToken = default);
 }

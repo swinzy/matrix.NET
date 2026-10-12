@@ -21,7 +21,7 @@ public class RoomMembershipTests
     {
         var handler = new StubHttpMessageHandler(HttpStatusCode.OK, """{"joined_rooms":[]}""");
 
-        await CreateClient(handler).GetJoinedRoomsAsync(Ct);
+        await CreateClient(handler).GetJoinedRoomsAsync(cancellationToken: Ct);
 
         Assert.Equal(HttpMethod.Get, handler.Request!.Method);
         Assert.Equal("https://matrix.example.org/_matrix/client/v3/joined_rooms", handler.Request.RequestUri!.AbsoluteUri);
@@ -33,7 +33,7 @@ public class RoomMembershipTests
     {
         var handler = new StubHttpMessageHandler(HttpStatusCode.OK, """{"joined_rooms":["!foo:example.com"]}""");
 
-        var rooms = await CreateClient(handler).GetJoinedRoomsAsync(Ct);
+        var rooms = await CreateClient(handler).GetJoinedRoomsAsync(cancellationToken: Ct);
 
         Assert.Equal(["!foo:example.com"], rooms);
     }
@@ -59,7 +59,7 @@ public class RoomMembershipTests
     {
         var handler = new StubHttpMessageHandler(HttpStatusCode.OK, """{"room_id":"!abc:example.org"}""");
 
-        await CreateClient(handler).JoinRoomAsync("!abc:example.org", ["example.org", "other.example"], "Hello", Ct);
+        await CreateClient(handler).JoinRoomAsync("!abc:example.org", ["example.org", "other.example"], "Hello", cancellationToken: Ct);
 
         Assert.Equal("?via=example.org&via=other.example&server_name=example.org&server_name=other.example",
             handler.Request!.RequestUri!.Query);
@@ -96,7 +96,7 @@ public class RoomMembershipTests
     {
         var handler = new StubHttpMessageHandler(HttpStatusCode.OK, "{}");
 
-        await CreateClient(handler).LeaveRoomAsync("!abc:example.org", "Moving on", Ct);
+        await CreateClient(handler).LeaveRoomAsync("!abc:example.org", "Moving on", cancellationToken: Ct);
 
         Assert.Equal("""{"reason":"Moving on"}""", handler.RequestBody);
     }

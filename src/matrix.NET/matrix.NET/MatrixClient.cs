@@ -104,13 +104,15 @@ public class MatrixClient : ISharedEndpoints
 
         VersionsCache.ValidateLifetime(Options.VersionsCacheLifetime, nameof(options));
         RateLimitRetry.Validate(Options.MaxRateLimitRetries, Options.MaxRateLimitWait, nameof(options));
+        WaitReporter.ValidateThreshold(Options.WaitReportThreshold, nameof(options));
 
         var automaticDecompression = Options.AutomaticDecompression;
-        _shared = new SharedEndpoints(ct => InvokeAsync<VersionsResponse>(Endpoints.Versions, ct),
-            Options.VersionsCacheLifetime, Options.TimeProvider);
+        _shared = new SharedEndpoints((waits, ct) => InvokeCoreAsync<VersionsResponse>(Endpoints.Versions, waits, ct),
+            Options.VersionsCacheLifetime, Options.TimeProvider, StartCall);
         _transport = new MatrixTransport(session.Homeserver,
             httpClientSource ?? (() => MatrixTransport.GetSharedClient(automaticDecompression)),
-            () => _session.AccessToken, () => _shared.Versions.Cached, Options.CreateRateLimitRetry());
+            () => _session.AccessToken, () => _shared.Versions.Cached, Options.CreateRateLimitRetry(),
+            Options.WaitReportThreshold, Options.TimeProvider);
     }
 
     /// <summary>The lifecycle state of the client.</summary>
@@ -157,18 +159,20 @@ public class MatrixClient : ISharedEndpoints
     /// Sent with the session's access token, so experimental features the homeserver offers only to
     /// logged-in users are included. Cached separately from any <see cref="MatrixServer"/>'s.
     /// </remarks>
-    public Task<VersionsResponse> GetVersionsAsync(CancellationToken cancellationToken = default)
+    public Task<VersionsResponse> GetVersionsAsync(IProgress<RequestWait>? progress = null,
+        CancellationToken cancellationToken = default)
     {
         // A cached answer must not make a dead client look usable (D21)
         EnsureUsable();
-        return _shared.GetVersionsAsync(cancellationToken);
+        return _shared.GetVersionsAsync(progress, cancellationToken);
     }
 
     /// <inheritdoc cref="MatrixServer.RefreshVersionsAsync"/>
-    public Task<VersionsResponse> RefreshVersionsAsync(CancellationToken cancellationToken = default)
+    public Task<VersionsResponse> RefreshVersionsAsync(IProgress<RequestWait>? progress = null,
+        CancellationToken cancellationToken = default)
     {
         EnsureUsable();
-        return _shared.RefreshVersionsAsync(cancellationToken);
+        return _shared.RefreshVersionsAsync(progress, cancellationToken);
     }
 
     /// <inheritdoc cref="MatrixServer.SupportsAsync"/>
@@ -177,18 +181,21 @@ public class MatrixClient : ISharedEndpoints
     /// advertising the version that contains it. To be certain, call the endpoint and handle the error.
     /// Uses this client's own cache, which includes features advertised only to logged-in users.
     /// </remarks>
-    public Task<bool> SupportsAsync(MatrixFeature feature, CancellationToken cancellationToken = default)
+    public Task<bool> SupportsAsync(MatrixFeature feature, IProgress<RequestWait>? progress = null,
+        CancellationToken cancellationToken = default)
     {
         EnsureUsable();
-        return _shared.SupportsAsync(feature, cancellationToken);
+        return _shared.SupportsAsync(feature, progress, cancellationToken);
     }
 
     /// <summary>
     /// Asks the homeserver who owns the session's access token.
     /// </summary>
+    /// <param name="progress">Told when the call waits longer than <see cref="ClientOptions.WaitReportThreshold"/> (D38).</param>
     /// <param name="cancellationToken">Cancels the request.</param>
-    public Task<WhoAmIResponse> WhoAmIAsync(CancellationToken cancellationToken = default) =>
-        InvokeAsync<WhoAmIResponse>(Endpoints.WhoAmI, cancellationToken);
+    public Task<WhoAmIResponse> WhoAmIAsync(IProgress<RequestWait>? progress = null,
+        CancellationToken cancellationToken = default) =>
+        InvokeAsync<WhoAmIResponse>(Endpoints.WhoAmI, progress, cancellationToken);
 
     /// <summary>
     /// Fetches what changed since the previous sync, or everything for an initial sync: one request to
@@ -221,21 +228,25 @@ public class MatrixClient : ISharedEndpoints
 
         // The homeserver may hold the request for the whole timeout, so the local timeout must be longer
         var localTimeout = request.Timeout + SyncTimeoutMargin;
-        return InvokeAsync(endpoint, ct => _transport.SendAsync<SyncResponse>(endpoint, ct, localTimeout),
+        // Not reported as a wait: holding the request open is how a long poll works (D38)
+        return InvokeCoreAsync(endpoint, (ct, _) => _transport.SendAsync<SyncResponse>(endpoint, ct, localTimeout), null,
             cancellationToken);
     }
 
     /// <summary>
     /// Gets the IDs of the rooms the user has joined.
     /// </summary>
+    /// <param name="progress">Told when the call waits longer than <see cref="ClientOptions.WaitReportThreshold"/> (D38).</param>
     /// <param name="cancellationToken">Cancels the request.</param>
-    public async Task<List<string>> GetJoinedRoomsAsync(CancellationToken cancellationToken = default) =>
-        (await InvokeAsync<JoinedRoomsResponse>(Endpoints.JoinedRooms, cancellationToken)).JoinedRooms;
+    public async Task<List<string>> GetJoinedRoomsAsync(IProgress<RequestWait>? progress = null,
+        CancellationToken cancellationToken = default) =>
+        (await InvokeAsync<JoinedRoomsResponse>(Endpoints.JoinedRooms, progress, cancellationToken)).JoinedRooms;
 
     /// <summary>
     /// Creates a room, with the user as its creator and first member (D35).
     /// </summary>
     /// <param name="request">Parameters; a private room with the homeserver's defaults when omitted.</param>
+    /// <param name="progress">Told when the call waits longer than <see cref="ClientOptions.WaitReportThreshold"/> (D38).</param>
     /// <param name="cancellationToken">Cancels the request.</param>
     /// <returns>The ID of the new room.</returns>
     /// <exception cref="ArgumentException">
@@ -246,7 +257,8 @@ public class MatrixClient : ISharedEndpoints
     /// The homeserver refused, e.g. with <see cref="MatrixErrorCodes.RoomInUse"/> for an alias that is
     /// taken, or <see cref="MatrixErrorCodes.UnsupportedRoomVersion"/>.
     /// </exception>
-    public Task<string> CreateRoomAsync(CreateRoomRequest? request = null, CancellationToken cancellationToken = default)
+    public Task<string> CreateRoomAsync(CreateRoomRequest? request = null, IProgress<RequestWait>? progress = null,
+        CancellationToken cancellationToken = default)
     {
         request ??= new CreateRoomRequest();
         // A full alias is an easy mistake, and the homeserver's error would not say what is wrong
@@ -263,8 +275,8 @@ public class MatrixClient : ISharedEndpoints
 
         async Task<string> CreateAsync() =>
             (await InvokeAsync(Endpoints.CreateRoom,
-                ct => _transport.SendAsync<CreateRoomRequest, CreateRoomResponse>(Endpoints.CreateRoom, request, ct),
-                cancellationToken)).RoomId;
+                (ct, waits) => _transport.SendAsync<CreateRoomRequest, CreateRoomResponse>(Endpoints.CreateRoom,
+                    request, ct, waits: waits), progress, cancellationToken)).RoomId;
     }
 
     /// <summary>
@@ -276,10 +288,11 @@ public class MatrixClient : ISharedEndpoints
     /// homeserver does not know yet; servers taken from an alias or a link to the room are a good choice.
     /// </param>
     /// <param name="reason">Optional reason, shown to other members in the membership event.</param>
+    /// <param name="progress">Told when the call waits longer than <see cref="ClientOptions.WaitReportThreshold"/> (D38).</param>
     /// <param name="cancellationToken">Cancels the request.</param>
     /// <returns>The ID of the joined room.</returns>
     public Task<string> JoinRoomAsync(string roomIdOrAlias, IEnumerable<string>? via = null, string? reason = null,
-        CancellationToken cancellationToken = default)
+        IProgress<RequestWait>? progress = null, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrEmpty(roomIdOrAlias);
         var servers = via?.ToList() ?? [];
@@ -295,8 +308,8 @@ public class MatrixClient : ISharedEndpoints
 
         async Task<string> JoinAsync() =>
             (await InvokeAsync(endpoint,
-                ct => _transport.SendAsync<JoinRequest, JoinRoomResponse>(endpoint, new JoinRequest(reason), ct),
-                cancellationToken)).RoomId;
+                (ct, waits) => _transport.SendAsync<JoinRequest, JoinRoomResponse>(endpoint, new JoinRequest(reason),
+                    ct, waits: waits), progress, cancellationToken)).RoomId;
     }
 
     /// <summary>
@@ -305,14 +318,16 @@ public class MatrixClient : ISharedEndpoints
     /// <remarks>The room stays in the user's history until it is forgotten.</remarks>
     /// <param name="roomId">The room ID, e.g. <c>!abc:example.org</c>.</param>
     /// <param name="reason">Optional reason, shown to other members in the membership event.</param>
+    /// <param name="progress">Told when the call waits longer than <see cref="ClientOptions.WaitReportThreshold"/> (D38).</param>
     /// <param name="cancellationToken">Cancels the request.</param>
-    public Task LeaveRoomAsync(string roomId, string? reason = null, CancellationToken cancellationToken = default)
+    public Task LeaveRoomAsync(string roomId, string? reason = null, IProgress<RequestWait>? progress = null,
+        CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrEmpty(roomId);
         var endpoint = Endpoints.LeaveRoom.Bind(roomId);
         return InvokeAsync(endpoint,
-            ct => _transport.SendAsync<LeaveRequest, EmptyResponse>(endpoint, new LeaveRequest(reason), ct),
-            cancellationToken);
+            (ct, waits) => _transport.SendAsync<LeaveRequest, EmptyResponse>(endpoint, new LeaveRequest(reason), ct,
+                waits: waits), progress, cancellationToken);
     }
 
     /// <summary>
@@ -326,12 +341,13 @@ public class MatrixClient : ISharedEndpoints
     /// <see cref="MatrixDotNet.TransactionId.New"/> if you may need it after a failure, to retry, or to
     /// match the message when it comes back through sync (D28).
     /// </param>
+    /// <param name="progress">Told when the call waits longer than <see cref="ClientOptions.WaitReportThreshold"/> (D38).</param>
     /// <param name="cancellationToken">Cancels the request.</param>
     /// <exception cref="ArgumentException">
     /// The content breaks the spec, e.g. it is an <see cref="InvalidMessageContent"/>.
     /// </exception>
     public Task<SendEventResult> SendMessageAsync(string roomId, MessageContent content, string? transactionId = null,
-        CancellationToken cancellationToken = default)
+        IProgress<RequestWait>? progress = null, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(content);
         if (content.Validate() is { } error)
@@ -339,7 +355,7 @@ public class MatrixClient : ISharedEndpoints
 
         return SendEventCoreAsync(roomId, "m.room.message",
             JsonSerializer.SerializeToNode(content, MatrixJsonContext.Instance.MessageContent), transactionId,
-            cancellationToken);
+            progress, cancellationToken);
     }
 
     /// <summary>
@@ -356,13 +372,15 @@ public class MatrixClient : ISharedEndpoints
     /// <param name="transactionId">
     /// Makes retries safe; see <see cref="SendMessageAsync"/>. Omit it to have one created.
     /// </param>
+    /// <param name="progress">Told when the call waits longer than <see cref="ClientOptions.WaitReportThreshold"/> (D38).</param>
     /// <param name="cancellationToken">Cancels the request.</param>
     [RequiresUnreferencedCode(ReflectionJson.Message)]
     [RequiresDynamicCode(ReflectionJson.Message)]
     public Task<SendEventResult> SendEventAsync<TContent>(string roomId, string eventType, TContent content,
-        string? transactionId = null, CancellationToken cancellationToken = default) =>
+        string? transactionId = null, IProgress<RequestWait>? progress = null,
+        CancellationToken cancellationToken = default) =>
         SendEventAsync(roomId, eventType, content,
-            ReflectionJson.TypeInfo<TContent>(), transactionId, cancellationToken);
+            ReflectionJson.TypeInfo<TContent>(), transactionId, progress, cancellationToken);
 
     /// <summary>
     /// Sends an event of any type to a room, with content serialised through
@@ -381,13 +399,15 @@ public class MatrixClient : ISharedEndpoints
     /// <param name="transactionId">
     /// Makes retries safe; see <see cref="SendMessageAsync"/>. Omit it to have one created.
     /// </param>
+    /// <param name="progress">Told when the call waits longer than <see cref="ClientOptions.WaitReportThreshold"/> (D38).</param>
     /// <param name="cancellationToken">Cancels the request.</param>
     public Task<SendEventResult> SendEventAsync<TContent>(string roomId, string eventType, TContent content,
-        JsonTypeInfo<TContent> contentTypeInfo, string? transactionId = null, CancellationToken cancellationToken = default)
+        JsonTypeInfo<TContent> contentTypeInfo, string? transactionId = null, IProgress<RequestWait>? progress = null,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(contentTypeInfo);
         return SendEventCoreAsync(roomId, eventType, JsonSerializer.SerializeToNode(content, contentTypeInfo),
-            transactionId, cancellationToken);
+            transactionId, progress, cancellationToken);
     }
 
     /// <summary>
@@ -400,12 +420,14 @@ public class MatrixClient : ISharedEndpoints
     /// <param name="transactionId">
     /// Makes retries safe; see <see cref="SendMessageAsync"/>. Omit it to have one created.
     /// </param>
+    /// <param name="progress">Told when the call waits longer than <see cref="ClientOptions.WaitReportThreshold"/> (D38).</param>
     /// <param name="cancellationToken">Cancels the request.</param>
     public Task<SendEventResult> SendEventAsync(string roomId, string eventType, JsonObject content,
-        string? transactionId = null, CancellationToken cancellationToken = default)
+        string? transactionId = null, IProgress<RequestWait>? progress = null,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(content);
-        return SendEventCoreAsync(roomId, eventType, content, transactionId, cancellationToken);
+        return SendEventCoreAsync(roomId, eventType, content, transactionId, progress, cancellationToken);
     }
 
     /// <summary>
@@ -424,10 +446,12 @@ public class MatrixClient : ISharedEndpoints
     /// <param name="transactionId">
     /// Makes retries safe; see <see cref="SendMessageAsync"/>. Omit it to have one created.
     /// </param>
+    /// <param name="progress">Told when the call waits longer than <see cref="ClientOptions.WaitReportThreshold"/> (D38).</param>
     /// <param name="cancellationToken">Cancels the request.</param>
     /// <returns>The ID of the redaction event, and the transaction ID used.</returns>
     public Task<SendEventResult> RedactEventAsync(string roomId, string eventId, string? reason = null,
-        string? transactionId = null, CancellationToken cancellationToken = default)
+        string? transactionId = null, IProgress<RequestWait>? progress = null,
+        CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrEmpty(roomId);
         ArgumentException.ThrowIfNullOrEmpty(eventId);
@@ -442,14 +466,14 @@ public class MatrixClient : ISharedEndpoints
         async Task<SendEventResult> RedactAsync()
         {
             var response = await InvokeAsync(endpoint,
-                ct => _transport.SendAsync<RedactRequest, SendEventResponse>(endpoint, new RedactRequest(reason), ct),
-                cancellationToken);
+                (ct, waits) => _transport.SendAsync<RedactRequest, SendEventResponse>(endpoint,
+                    new RedactRequest(reason), ct, waits: waits), progress, cancellationToken);
             return new SendEventResult(response.EventId, id);
         }
     }
 
     private Task<SendEventResult> SendEventCoreAsync(string roomId, string eventType, JsonNode? content,
-        string? transactionId, CancellationToken cancellationToken)
+        string? transactionId, IProgress<RequestWait>? progress, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrEmpty(roomId);
         ArgumentException.ThrowIfNullOrEmpty(eventType);
@@ -466,7 +490,8 @@ public class MatrixClient : ISharedEndpoints
         async Task<SendEventResult> SendAsync()
         {
             var response = await InvokeAsync(endpoint,
-                ct => _transport.SendAsync<JsonObject, SendEventResponse>(endpoint, json, ct), cancellationToken);
+                (ct, waits) => _transport.SendAsync<JsonObject, SendEventResponse>(endpoint, json, ct, waits: waits),
+                progress, cancellationToken);
             return new SendEventResult(response.EventId, id);
         }
     }
@@ -480,14 +505,16 @@ public class MatrixClient : ISharedEndpoints
     /// counts as success. Other failures, e.g. network errors, throw and leave the client usable,
     /// so the logout can be retried. Logging out also works while the account is locked.
     /// </remarks>
+    /// <param name="progress">Told when the call waits longer than <see cref="ClientOptions.WaitReportThreshold"/> (D38).</param>
     /// <param name="cancellationToken">Cancels the request.</param>
     /// <exception cref="InvalidOperationException">The client has already logged out or been invalidated.</exception>
-    public async Task LogoutAsync(CancellationToken cancellationToken = default)
+    public async Task LogoutAsync(IProgress<RequestWait>? progress = null, CancellationToken cancellationToken = default)
     {
         EnsureUsable();
         try
         {
-            await _transport.SendAsync<EmptyResponse>(Endpoints.Logout, cancellationToken);
+            await _transport.SendAsync<EmptyResponse>(Endpoints.Logout, cancellationToken,
+                waits: StartCall(progress));
         }
         catch (MatrixUnknownTokenException)
         {
@@ -497,19 +524,32 @@ public class MatrixClient : ISharedEndpoints
         TryChangeState(MatrixClientState.LoggedOut, new SessionChangedEventArgs(SessionChangeKind.LoggedOut));
     }
 
-    private Task<T> InvokeAsync<T>(Endpoint endpoint, CancellationToken cancellationToken) =>
-        InvokeAsync(endpoint, ct => _transport.SendAsync<T>(endpoint, ct), cancellationToken);
+    private Task<T> InvokeAsync<T>(Endpoint endpoint, IProgress<RequestWait>? progress,
+        CancellationToken cancellationToken) =>
+        InvokeAsync(endpoint, (ct, waits) => _transport.SendAsync<T>(endpoint, ct, waits: waits), progress,
+            cancellationToken);
+
+    // A public call, timed from here for reporting its waits (D38)
+    private Task<T> InvokeAsync<T>(Endpoint endpoint, Func<CancellationToken, WaitReporter?, Task<T>> call,
+        IProgress<RequestWait>? progress, CancellationToken cancellationToken) =>
+        InvokeCoreAsync(endpoint, call, StartCall(progress), cancellationToken);
+
+    private Task<T> InvokeCoreAsync<T>(Endpoint endpoint, WaitReporter? waits, CancellationToken cancellationToken) =>
+        InvokeCoreAsync(endpoint, (ct, w) => _transport.SendAsync<T>(endpoint, ct, waits: w), waits,
+            cancellationToken);
+
+    private WaitReporter? StartCall(IProgress<RequestWait>? progress) => _transport.StartCall(progress);
 
     // Every endpoint goes through here, so state checks, token refresh and locking apply uniformly.
     // The endpoint must be the one call sends to
-    private async Task<T> InvokeAsync<T>(Endpoint endpoint, Func<CancellationToken, Task<T>> call,
-        CancellationToken cancellationToken)
+    private async Task<T> InvokeCoreAsync<T>(Endpoint endpoint, Func<CancellationToken, WaitReporter?, Task<T>> call,
+        WaitReporter? waits, CancellationToken cancellationToken)
     {
         EnsureUsable();
         T result;
         try
         {
-            result = await SendWithRefreshAsync(call, cancellationToken);
+            result = await SendWithRefreshAsync(call, waits, cancellationToken);
         }
         catch (MatrixUserLockedException)
         {
@@ -531,21 +571,21 @@ public class MatrixClient : ISharedEndpoints
     // token another request refreshed does not use up that chance, so the outcome does not depend on
     // whether this request was sent before or after the other refresh. The loop stops: every pass that
     // does not refresh here follows a real refresh by another request.
-    private async Task<T> SendWithRefreshAsync<T>(Func<CancellationToken, Task<T>> call,
-        CancellationToken cancellationToken)
+    private async Task<T> SendWithRefreshAsync<T>(Func<CancellationToken, WaitReporter?, Task<T>> call,
+        WaitReporter? waits, CancellationToken cancellationToken)
     {
         var refreshed = false;
         for (;;)
         {
             try
             {
-                return await call(cancellationToken);
+                return await call(cancellationToken, waits);
             }
             catch (MatrixUnknownTokenException e)
             {
                 if (refreshed)
                     throw Invalidate(e, RefreshFailedMessage);
-                refreshed = await RefreshAsync(e, cancellationToken);
+                refreshed = await RefreshAsync(e, waits, cancellationToken);
             }
         }
     }
@@ -555,7 +595,8 @@ public class MatrixClient : ISharedEndpoints
     /// should see if that is impossible. Returns <see langword="false"/> without refreshing if another
     /// request has already replaced the rejected token.
     /// </summary>
-    private async Task<bool> RefreshAsync(MatrixUnknownTokenException rejection, CancellationToken cancellationToken)
+    private async Task<bool> RefreshAsync(MatrixUnknownTokenException rejection, WaitReporter? waits,
+        CancellationToken cancellationToken)
     {
         if (_session.RefreshToken is null)
             throw Invalidate(rejection,
@@ -564,7 +605,15 @@ public class MatrixClient : ISharedEndpoints
             throw Invalidate(rejection,
                 "The access token is no longer valid and automatic token refresh is disabled. Refresh the session manually or log in again.");
 
-        await _refreshLock.WaitAsync(cancellationToken);
+        // The rejected request was not carried out, so nothing waited for here can have taken effect
+        waits = waits?.WithoutEffects();
+        if (!_refreshLock.Wait(0, CancellationToken.None))
+        {
+            // Another request is refreshing; its response is what this call waits for
+            using (waits?.AwaitResponse(mayTakeEffect: false))
+                await _refreshLock.WaitAsync(cancellationToken);
+        }
+
         try
         {
             // Another request may have refreshed, or failed to, while this one waited. The token is
@@ -576,7 +625,7 @@ public class MatrixClient : ISharedEndpoints
             if (_session.AccessToken != rejection.RejectedAccessToken)
                 return false;
 
-            var refreshed = await RequestRefreshAsync(_session, cancellationToken);
+            var refreshed = await RequestRefreshAsync(_session, waits, cancellationToken);
             // The homeserver revokes the old refresh token once the new tokens are used, so they must
             // be saved first. If saving throws, they are never used and the old refresh token stays valid
             await Options.SessionRefreshHandler!.OnSessionRefreshedAsync(refreshed, cancellationToken);
@@ -592,13 +641,14 @@ public class MatrixClient : ISharedEndpoints
         return true;
     }
 
-    private async Task<MatrixSession> RequestRefreshAsync(MatrixSession session, CancellationToken cancellationToken)
+    private async Task<MatrixSession> RequestRefreshAsync(MatrixSession session, WaitReporter? waits,
+        CancellationToken cancellationToken)
     {
         RefreshResponse response;
         try
         {
             response = await _transport.SendAsync<RefreshRequest, RefreshResponse>(Endpoints.Refresh,
-                new RefreshRequest(session.RefreshToken!), cancellationToken);
+                new RefreshRequest(session.RefreshToken!), cancellationToken, waits: waits);
         }
         catch (MatrixUnknownTokenException e)
         {

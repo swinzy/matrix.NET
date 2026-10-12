@@ -15,7 +15,7 @@ public class VersionsIntegrationTests
         Assert.SkipWhen(string.IsNullOrEmpty(_settings.Homeserver), TestSettings.NotConfiguredMessage);
         var server = new MatrixServer(new Uri(_settings.Homeserver!));
 
-        var response = await server.GetVersionsAsync(TestContext.Current.CancellationToken);
+        var response = await server.GetVersionsAsync(cancellationToken: TestContext.Current.CancellationToken);
 
         // Any homeserver in use today supports at least one v1.x version
         Assert.Contains(response.Versions, version => version.StartsWith("v1."));
@@ -27,11 +27,11 @@ public class VersionsIntegrationTests
         Assert.SkipWhen(string.IsNullOrEmpty(_settings.Homeserver), TestSettings.NotConfiguredMessage);
         var server = new MatrixServer(new Uri(_settings.Homeserver!));
 
-        var response = await server.GetVersionsAsync(TestContext.Current.CancellationToken);
+        var response = await server.GetVersionsAsync(cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.True(response.MeetsMinimumVersion);
         // Every homeserver in use today is past v1.3, which added token refresh
-        Assert.True(await server.SupportsAsync(MatrixFeature.TokenRefresh, TestContext.Current.CancellationToken));
+        Assert.True(await server.SupportsAsync(MatrixFeature.TokenRefresh, cancellationToken: TestContext.Current.CancellationToken));
     }
 
     // Checks that the homeserver answers an unknown path as D26 expects, 404 or 405 M_UNRECOGNIZED, by
@@ -41,7 +41,7 @@ public class VersionsIntegrationTests
     {
         Assert.SkipWhen(string.IsNullOrEmpty(_settings.Homeserver), TestSettings.NotConfiguredMessage);
         var homeserver = new Uri(_settings.Homeserver!);
-        var versions = await new MatrixServer(homeserver).GetVersionsAsync(TestContext.Current.CancellationToken);
+        var versions = await new MatrixServer(homeserver).GetVersionsAsync(cancellationToken: TestContext.Current.CancellationToken);
         var transport = new MatrixTransport(homeserver, cachedVersions: () => versions);
         var unknown = Endpoint.Since(MatrixFeature.TokenRefresh, HttpMethod.Get,
             "_matrix/client/v3/matrixdotnet_does_not_exist", AuthRequirement.None);

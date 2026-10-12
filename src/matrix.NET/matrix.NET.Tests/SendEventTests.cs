@@ -44,7 +44,7 @@ public partial class SendEventTests
         var handler = new StubHttpMessageHandler(HttpStatusCode.OK, Sent);
 
         var result = await CreateClient(handler).SendMessageAsync("!abc:example.org", new TextMessageContent("hi"),
-            "my-txn", Ct);
+            "my-txn", cancellationToken: Ct);
 
         Assert.Equal("my-txn", result.TransactionId);
         Assert.EndsWith("/m.room.message/my-txn", handler.Request!.RequestUri!.AbsoluteUri);
@@ -123,7 +123,7 @@ public partial class SendEventTests
         var handler = new StubHttpMessageHandler(HttpStatusCode.OK, Sent);
         var content = new JsonObject { ["Move"] = "e2e4", ["m.relates_to"] = new JsonObject() };
 
-        await CreateClient(handler).SendEventAsync("!abc:example.org", "com.example/game", content, "t1", Ct);
+        await CreateClient(handler).SendEventAsync("!abc:example.org", "com.example/game", content, "t1", cancellationToken: Ct);
 
         Assert.Equal(RoomPath + "com.example%2Fgame/t1", handler.Request!.RequestUri!.AbsoluteUri);
         Assert.Equal("""{"Move":"e2e4","m.relates_to":{}}""", handler.RequestBody);
@@ -176,7 +176,7 @@ public partial class SendEventTests
         var handler = new StubHttpMessageHandler(HttpStatusCode.OK, Sent);
 
         await Assert.ThrowsAnyAsync<ArgumentException>(() =>
-            CreateClient(handler).SendEventAsync(roomId, eventType, new JsonObject(), transactionId, Ct));
+            CreateClient(handler).SendEventAsync(roomId, eventType, new JsonObject(), transactionId, cancellationToken: Ct));
 
         Assert.Null(handler.Request);
     }

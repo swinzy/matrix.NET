@@ -48,7 +48,7 @@ public class MatrixClientTests
     {
         var handler = new StubHttpMessageHandler(HttpStatusCode.OK, """{"user_id":"@joe:example.org"}""");
 
-        await CreateClient(handler).WhoAmIAsync(TestContext.Current.CancellationToken);
+        await CreateClient(handler).WhoAmIAsync(cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.Equal(HttpMethod.Get, handler.Request!.Method);
         Assert.Equal("https://matrix.example.org/_matrix/client/v3/account/whoami", handler.Request.RequestUri!.ToString());
@@ -62,7 +62,7 @@ public class MatrixClientTests
         var handler = new StubHttpMessageHandler(HttpStatusCode.OK,
             """{"user_id":"@joe:example.org","device_id":"ABC1234"}""");
 
-        var response = await CreateClient(handler).WhoAmIAsync(TestContext.Current.CancellationToken);
+        var response = await CreateClient(handler).WhoAmIAsync(cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.Equal("@joe:example.org", response.UserId);
         Assert.Equal("ABC1234", response.DeviceId);
@@ -75,7 +75,7 @@ public class MatrixClientTests
     {
         var handler = new StubHttpMessageHandler(HttpStatusCode.OK, """{"user_id":"@guest:example.org","is_guest":true}""");
 
-        var response = await CreateClient(handler).WhoAmIAsync(TestContext.Current.CancellationToken);
+        var response = await CreateClient(handler).WhoAmIAsync(cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.True(response.IsGuest);
         Assert.Null(response.DeviceId);
@@ -87,7 +87,7 @@ public class MatrixClientTests
     {
         var handler = new StubHttpMessageHandler(HttpStatusCode.OK, """{"versions":["v1.1"]}""");
 
-        await CreateClient(handler).GetVersionsAsync(TestContext.Current.CancellationToken);
+        await CreateClient(handler).GetVersionsAsync(cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.Equal("https://matrix.example.org/_matrix/client/versions", handler.Request!.RequestUri!.ToString());
         Assert.Equal("secret-access", handler.Request.Headers.Authorization!.Parameter);
@@ -104,8 +104,8 @@ public class MatrixClientTests
             return new HttpClient(handler);
         });
 
-        await client.WhoAmIAsync(TestContext.Current.CancellationToken);
-        await client.WhoAmIAsync(TestContext.Current.CancellationToken);
+        await client.WhoAmIAsync(cancellationToken: TestContext.Current.CancellationToken);
+        await client.WhoAmIAsync(cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.Equal(2, clientsCreated);
     }

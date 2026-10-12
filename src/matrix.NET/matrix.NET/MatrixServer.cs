@@ -52,12 +52,15 @@ public class MatrixServer : ISharedEndpoints
         Options = options ?? new ServerOptions();
         VersionsCache.ValidateLifetime(Options.VersionsCacheLifetime, nameof(options));
         RateLimitRetry.Validate(Options.MaxRateLimitRetries, Options.MaxRateLimitWait, nameof(options));
+        WaitReporter.ValidateThreshold(Options.WaitReportThreshold, nameof(options));
 
         var automaticDecompression = Options.AutomaticDecompression;
-        _shared = new SharedEndpoints(FetchVersionsAsync, Options.VersionsCacheLifetime, Options.TimeProvider);
+        _shared = new SharedEndpoints(FetchVersionsAsync, Options.VersionsCacheLifetime, Options.TimeProvider,
+            StartCall);
         _transport = new MatrixTransport(homeserver,
             httpClientSource ?? (() => MatrixTransport.GetSharedClient(automaticDecompression)),
-            cachedVersions: () => _shared.Versions.Cached, rateLimitRetry: Options.CreateRateLimitRetry());
+            cachedVersions: () => _shared.Versions.Cached, rateLimitRetry: Options.CreateRateLimitRetry(),
+            waitReportThreshold: Options.WaitReportThreshold, time: Options.TimeProvider);
     }
 
     /// <summary>The options this server was created with.</summary>
@@ -72,17 +75,21 @@ public class MatrixServer : ISharedEndpoints
     /// to logged-in users, so a <see cref="MatrixClient"/> may see more. Concurrent calls share one
     /// request, and a failed request leaves the cache as it was.
     /// </remarks>
+    /// <param name="progress">Told when the call waits longer than <see cref="ServerOptions.WaitReportThreshold"/> (D38).</param>
     /// <param name="cancellationToken">Cancels the request.</param>
-    public Task<VersionsResponse> GetVersionsAsync(CancellationToken cancellationToken = default) =>
-        _shared.GetVersionsAsync(cancellationToken);
+    public Task<VersionsResponse> GetVersionsAsync(IProgress<RequestWait>? progress = null,
+        CancellationToken cancellationToken = default) =>
+        _shared.GetVersionsAsync(progress, cancellationToken);
 
     /// <summary>
     /// Fetches the specification versions and experimental features now, whatever the cache holds,
     /// and caches them (D25). Use it to pay for the request when the app chooses, e.g. at start-up.
     /// </summary>
+    /// <param name="progress">Told when the call waits longer than <see cref="ServerOptions.WaitReportThreshold"/> (D38).</param>
     /// <param name="cancellationToken">Cancels the request.</param>
-    public Task<VersionsResponse> RefreshVersionsAsync(CancellationToken cancellationToken = default) =>
-        _shared.RefreshVersionsAsync(cancellationToken);
+    public Task<VersionsResponse> RefreshVersionsAsync(IProgress<RequestWait>? progress = null,
+        CancellationToken cancellationToken = default) =>
+        _shared.RefreshVersionsAsync(progress, cancellationToken);
 
     /// <summary>
     /// Whether the homeserver advertises <paramref name="feature"/>, e.g. to hide or disable it before
@@ -96,13 +103,23 @@ public class MatrixServer : ISharedEndpoints
     /// may answer <see langword="true"/> where this answers <see langword="false"/>.
     /// </remarks>
     /// <param name="feature">A feature, e.g. <see cref="MatrixFeature.TokenRefresh"/>.</param>
+    /// <param name="progress">Told when the call waits longer than <see cref="ServerOptions.WaitReportThreshold"/> (D38).</param>
     /// <param name="cancellationToken">Cancels the request, if one is needed.</param>
-    public Task<bool> SupportsAsync(MatrixFeature feature, CancellationToken cancellationToken = default) =>
-        _shared.SupportsAsync(feature, cancellationToken);
+    public Task<bool> SupportsAsync(MatrixFeature feature, IProgress<RequestWait>? progress = null,
+        CancellationToken cancellationToken = default) =>
+        _shared.SupportsAsync(feature, progress, cancellationToken);
 
-    public async Task<List<LoginFlow>> GetSupportedLoginTypesAsync(CancellationToken cancellationToken = default)
+    /// <summary>
+    /// Gets the login types the homeserver supports (<c>GET /login</c>), e.g. to choose which login form
+    /// to show.
+    /// </summary>
+    /// <param name="progress">Told when the call waits longer than <see cref="ServerOptions.WaitReportThreshold"/> (D38).</param>
+    /// <param name="cancellationToken">Cancels the request.</param>
+    public async Task<List<LoginFlow>> GetSupportedLoginTypesAsync(IProgress<RequestWait>? progress = null,
+        CancellationToken cancellationToken = default)
     {
-        var response = await _transport.SendAsync<LoginFlowsResponse>(Endpoints.LoginFlows, cancellationToken);
+        var response = await _transport.SendAsync<LoginFlowsResponse>(Endpoints.LoginFlows, cancellationToken,
+            waits: StartCall(progress));
         return response.Flows ?? [];
     }
 
@@ -116,6 +133,10 @@ public class MatrixServer : ISharedEndpoints
     /// for <c>@alice:example.org:8448</c>, <c>https://example.org/.well-known/matrix/client</c>.
     /// </remarks>
     /// <param name="userIdOrServerName">A user ID, e.g. <c>@alice:example.org</c>, or a server name, e.g. <c>example.org</c>.</param>
+    /// <param name="progress">
+    /// Told when the call waits longer than three seconds (D38); the threshold cannot be changed, as no
+    /// options apply to discovery.
+    /// </param>
     /// <param name="cancellationToken">Cancels the requests.</param>
     /// <returns>
     /// The homeserver found, or <see langword="null"/> if the server name publishes no discovery
@@ -128,18 +149,22 @@ public class MatrixServer : ISharedEndpoints
     /// the homeserver URL or to stop.
     /// </exception>
     public static Task<ServerDiscovery?> DiscoverAsync(string userIdOrServerName,
-        CancellationToken cancellationToken = default) =>
-        Discovery.DiscoverAsync(userIdOrServerName, null, cancellationToken);
+        IProgress<RequestWait>? progress = null, CancellationToken cancellationToken = default) =>
+        Discovery.DiscoverAsync(userIdOrServerName, null, progress, cancellationToken);
 
-    /// <inheritdoc cref="DiscoverAsync(string, CancellationToken)"/>
+    /// <inheritdoc cref="DiscoverAsync(string, IProgress{RequestWait}?, CancellationToken)"/>
     /// <param name="userIdOrServerName">A user ID, e.g. <c>@alice:example.org</c>, or a server name, e.g. <c>example.org</c>.</param>
     /// <param name="httpClient">A long-lived client for both requests, owned and disposed by the caller.</param>
+    /// <param name="progress">
+    /// Told when the call waits longer than three seconds (D38); the threshold cannot be changed, as no
+    /// options apply to discovery.
+    /// </param>
     /// <param name="cancellationToken">Cancels the requests.</param>
     public static Task<ServerDiscovery?> DiscoverAsync(string userIdOrServerName, HttpClient httpClient,
-        CancellationToken cancellationToken = default)
+        IProgress<RequestWait>? progress = null, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(httpClient);
-        return Discovery.DiscoverAsync(userIdOrServerName, () => httpClient, cancellationToken);
+        return Discovery.DiscoverAsync(userIdOrServerName, () => httpClient, progress, cancellationToken);
     }
 
     /// <summary>
@@ -147,11 +172,13 @@ public class MatrixServer : ISharedEndpoints
     /// app is responsible for saving the session (D23).
     /// </summary>
     /// <param name="request">Login type and credentials.</param>
+    /// <param name="progress">Told when the call waits longer than <see cref="ServerOptions.WaitReportThreshold"/> (D38).</param>
     /// <param name="cancellationToken">Cancels the request.</param>
-    public async Task<LoginResult> LoginAsync(LoginRequest request, CancellationToken cancellationToken = default)
+    public async Task<LoginResult> LoginAsync(LoginRequest request, IProgress<RequestWait>? progress = null,
+        CancellationToken cancellationToken = default)
     {
         var response = await _transport.SendAsync<LoginRequest, LoginResponse>(Endpoints.Login, request,
-            cancellationToken);
+            cancellationToken, waits: StartCall(progress));
 
         var session = new MatrixSession
         {
@@ -166,8 +193,10 @@ public class MatrixServer : ISharedEndpoints
         return new LoginResult(session, DiscoveryInformation.TryRead(response.WellKnown));
     }
 
-    private Task<VersionsResponse> FetchVersionsAsync(CancellationToken cancellationToken) =>
-        _transport.SendAsync<VersionsResponse>(Endpoints.Versions, cancellationToken);
+    private WaitReporter? StartCall(IProgress<RequestWait>? progress) => _transport.StartCall(progress);
+
+    private Task<VersionsResponse> FetchVersionsAsync(WaitReporter? waits, CancellationToken cancellationToken) =>
+        _transport.SendAsync<VersionsResponse>(Endpoints.Versions, cancellationToken, waits: waits);
 
     internal record LoginFlowsResponse(List<LoginFlow>? Flows);
 }

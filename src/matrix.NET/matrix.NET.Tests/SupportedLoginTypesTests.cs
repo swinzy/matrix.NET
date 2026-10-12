@@ -12,7 +12,7 @@ public class SupportedLoginTypesTests
     {
         var handler = new StubHttpMessageHandler(HttpStatusCode.OK, """{"flows":[]}""");
 
-        await CreateServer(handler).GetSupportedLoginTypesAsync(TestContext.Current.CancellationToken);
+        await CreateServer(handler).GetSupportedLoginTypesAsync(cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.Equal(HttpMethod.Get, handler.Request!.Method);
         Assert.Equal("https://matrix.example.org/_matrix/client/v3/login", handler.Request.RequestUri!.ToString());
@@ -29,8 +29,8 @@ public class SupportedLoginTypesTests
             return new HttpClient(handler);
         });
 
-        await server.GetSupportedLoginTypesAsync(TestContext.Current.CancellationToken);
-        await server.GetSupportedLoginTypesAsync(TestContext.Current.CancellationToken);
+        await server.GetSupportedLoginTypesAsync(cancellationToken: TestContext.Current.CancellationToken);
+        await server.GetSupportedLoginTypesAsync(cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.Equal(2, clientsCreated);
     }
@@ -42,7 +42,7 @@ public class SupportedLoginTypesTests
         var handler = new StubHttpMessageHandler(HttpStatusCode.OK,
             """{"flows":[{"type":"m.login.password"},{"type":"m.login.token","get_login_token":true}]}""");
 
-        var flows = await CreateServer(handler).GetSupportedLoginTypesAsync(TestContext.Current.CancellationToken);
+        var flows = await CreateServer(handler).GetSupportedLoginTypesAsync(cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.Collection(flows,
             flow =>
@@ -62,7 +62,7 @@ public class SupportedLoginTypesTests
     {
         var handler = new StubHttpMessageHandler(HttpStatusCode.OK, "{}");
 
-        var flows = await CreateServer(handler).GetSupportedLoginTypesAsync(TestContext.Current.CancellationToken);
+        var flows = await CreateServer(handler).GetSupportedLoginTypesAsync(cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.Empty(flows);
     }
@@ -75,7 +75,7 @@ public class SupportedLoginTypesTests
             """{"errcode":"M_UNRECOGNIZED","error":"OAuth 2.0 authentication is in use on this homeserver."}""");
 
         var exception = await Assert.ThrowsAsync<MatrixException>(() =>
-            CreateServer(handler).GetSupportedLoginTypesAsync(TestContext.Current.CancellationToken));
+            CreateServer(handler).GetSupportedLoginTypesAsync(cancellationToken: TestContext.Current.CancellationToken));
 
         Assert.Equal(HttpStatusCode.NotFound, exception.StatusCode);
         Assert.Equal("M_UNRECOGNIZED", exception.ErrorCode);

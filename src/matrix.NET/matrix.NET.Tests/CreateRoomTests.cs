@@ -63,7 +63,7 @@ public class CreateRoomTests
             {
                 ["invite_3pid"] = JsonElement.Parse("[]")
             }
-        }, Ct);
+        }, cancellationToken: Ct);
 
         const string expected =
             """
@@ -82,7 +82,7 @@ public class CreateRoomTests
         var handler = Created();
 
         var exception = await Assert.ThrowsAsync<ArgumentException>(() =>
-            CreateClient(handler).CreateRoomAsync(new CreateRoomRequest { RoomAliasName = aliasName }, Ct));
+            CreateClient(handler).CreateRoomAsync(new CreateRoomRequest { RoomAliasName = aliasName }, cancellationToken: Ct));
 
         Assert.Contains("local part", exception.Message);
         Assert.Null(handler.Request);
@@ -95,14 +95,14 @@ public class CreateRoomTests
         var client = CreateClient(handler);
 
         await Assert.ThrowsAsync<ArgumentException>(() =>
-            client.CreateRoomAsync(new CreateRoomRequest { Invite = ["@alice:example.org", ""] }, Ct));
+            client.CreateRoomAsync(new CreateRoomRequest { Invite = ["@alice:example.org", ""] }, cancellationToken: Ct));
         await Assert.ThrowsAsync<ArgumentException>(() =>
             client.CreateRoomAsync(new CreateRoomRequest
             {
                 InitialState = [new InitialStateEvent { Type = "", Content = new JsonObject() }]
-            }, Ct));
+            }, cancellationToken: Ct));
         await Assert.ThrowsAsync<ArgumentException>(() =>
-            client.CreateRoomAsync(new CreateRoomRequest { InitialState = [null!] }, Ct));
+            client.CreateRoomAsync(new CreateRoomRequest { InitialState = [null!] }, cancellationToken: Ct));
 
         Assert.Null(handler.Request);
     }
@@ -114,7 +114,7 @@ public class CreateRoomTests
             """{"errcode":"M_ROOM_IN_USE","error":"Room alias already taken"}""");
 
         var exception = await Assert.ThrowsAsync<MatrixException>(() =>
-            CreateClient(handler).CreateRoomAsync(new CreateRoomRequest { RoomAliasName = "plans" }, Ct));
+            CreateClient(handler).CreateRoomAsync(new CreateRoomRequest { RoomAliasName = "plans" }, cancellationToken: Ct));
 
         Assert.Equal(MatrixErrorCodes.RoomInUse, exception.ErrorCode);
     }

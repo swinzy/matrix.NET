@@ -13,7 +13,7 @@ public class RoomMembershipIntegrationTests(LoggedInClientFixture fixture)
     {
         var client = await fixture.GetClientAsync();
 
-        var rooms = await client.GetJoinedRoomsAsync(Ct);
+        var rooms = await client.GetJoinedRoomsAsync(cancellationToken: Ct);
 
         Assert.All(rooms, room => Assert.StartsWith("!", room));
     }
@@ -27,15 +27,15 @@ public class RoomMembershipIntegrationTests(LoggedInClientFixture fixture)
         {
             var (roomId, alias) = await TestRooms.CreatePublicAsync(other, Ct);
 
-            var joined = await client.JoinRoomAsync(alias, [TestRooms.ServerName(client.Session)], "matrix.NET join test", Ct);
+            var joined = await client.JoinRoomAsync(alias, [TestRooms.ServerName(client.Session)], "matrix.NET join test", cancellationToken: Ct);
 
             Assert.Equal(roomId, joined);
-            Assert.Contains(roomId, await client.GetJoinedRoomsAsync(Ct));
+            Assert.Contains(roomId, await client.GetJoinedRoomsAsync(cancellationToken: Ct));
             await client.LeaveRoomAsync(roomId, cancellationToken: Ct);
         }
         finally
         {
-            await other.LogoutAsync(Ct);
+            await other.LogoutAsync(cancellationToken: Ct);
         }
     }
 
@@ -52,7 +52,7 @@ public class RoomMembershipIntegrationTests(LoggedInClientFixture fixture)
         }
         finally
         {
-            await other.LogoutAsync(Ct);
+            await other.LogoutAsync(cancellationToken: Ct);
         }
     }
 
@@ -69,7 +69,7 @@ public class RoomMembershipIntegrationTests(LoggedInClientFixture fixture)
             Identifier = new UserIdentifier { User = settings.OtherUser! },
             Password = settings.Password,
             RefreshToken = false
-        }, Ct)).Session;
+        }, cancellationToken: Ct)).Session;
         return (client, new MatrixClient(session));
     }
 
@@ -79,10 +79,10 @@ public class RoomMembershipIntegrationTests(LoggedInClientFixture fixture)
         Assert.SkipUnless(fixture.Settings.IsLocal, TestRooms.LocalOnly);
         var client = await fixture.GetClientAsync();
         var roomId = await TestRooms.CreateAsync(client, Ct);
-        Assert.Contains(roomId, await client.GetJoinedRoomsAsync(Ct));
+        Assert.Contains(roomId, await client.GetJoinedRoomsAsync(cancellationToken: Ct));
 
-        await client.LeaveRoomAsync(roomId, "matrix.NET leave test", Ct);
+        await client.LeaveRoomAsync(roomId, "matrix.NET leave test", cancellationToken: Ct);
 
-        Assert.DoesNotContain(roomId, await client.GetJoinedRoomsAsync(Ct));
+        Assert.DoesNotContain(roomId, await client.GetJoinedRoomsAsync(cancellationToken: Ct));
     }
 }

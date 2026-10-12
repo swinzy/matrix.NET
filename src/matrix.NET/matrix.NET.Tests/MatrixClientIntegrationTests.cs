@@ -11,7 +11,7 @@ public class MatrixClientIntegrationTests(LoggedInClientFixture fixture)
     {
         var client = await fixture.GetClientAsync();
 
-        var response = await client.WhoAmIAsync(TestContext.Current.CancellationToken);
+        var response = await client.WhoAmIAsync(cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.Equal(client.UserId, response.UserId);
         Assert.Equal(client.DeviceId, response.DeviceId);
@@ -23,7 +23,7 @@ public class MatrixClientIntegrationTests(LoggedInClientFixture fixture)
     {
         var client = await fixture.GetClientAsync();
 
-        var response = await client.GetVersionsAsync(TestContext.Current.CancellationToken);
+        var response = await client.GetVersionsAsync(cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.Contains(response.Versions, version => version.StartsWith("v1."));
     }
@@ -43,15 +43,15 @@ public class MatrixClientIntegrationTests(LoggedInClientFixture fixture)
             Password = settings.Password,
             InitialDeviceDisplayName = "matrix.NET logout test",
             RefreshToken = false
-        }, TestContext.Current.CancellationToken)).Session;
+        }, cancellationToken: TestContext.Current.CancellationToken)).Session;
         var client = new MatrixClient(session, new ClientOptions { AutoRefreshToken = false });
 
-        await client.LogoutAsync(TestContext.Current.CancellationToken);
+        await client.LogoutAsync(cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.Equal(MatrixClientState.LoggedOut, client.State);
         // The homeserver no longer accepts the token
         var afterLogout = new MatrixClient(session, new ClientOptions { AutoRefreshToken = false });
         await Assert.ThrowsAsync<MatrixUnknownTokenException>(() =>
-            afterLogout.WhoAmIAsync(TestContext.Current.CancellationToken));
+            afterLogout.WhoAmIAsync(cancellationToken: TestContext.Current.CancellationToken));
     }
 }

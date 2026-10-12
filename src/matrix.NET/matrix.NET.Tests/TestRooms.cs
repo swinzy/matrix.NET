@@ -7,7 +7,7 @@ internal static class TestRooms
 
     /// <summary>Creates a private room and returns its ID.</summary>
     public static Task<string> CreateAsync(MatrixClient client, CancellationToken cancellationToken) =>
-        client.CreateRoomAsync(new CreateRoomRequest { Name = "matrix.NET test room" }, cancellationToken);
+        client.CreateRoomAsync(new CreateRoomRequest { Name = "matrix.NET test room" }, cancellationToken: cancellationToken);
 
     /// <summary>Creates a public room with a new alias, which anyone can join, and returns both.</summary>
     public static async Task<(string RoomId, string Alias)> CreatePublicAsync(MatrixClient client,
@@ -17,7 +17,7 @@ internal static class TestRooms
         var roomId = await client.CreateRoomAsync(new CreateRoomRequest
         {
             Name = "matrix.NET public test room", Preset = RoomPresets.PublicChat, RoomAliasName = aliasName
-        }, cancellationToken);
+        }, cancellationToken: cancellationToken);
         return (roomId, $"#{aliasName}:{ServerName(client.Session)}");
     }
 

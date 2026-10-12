@@ -29,7 +29,7 @@ public class MatrixClientLifecycleTests
         var handler = new StubHttpMessageHandler(HttpStatusCode.OK, "{}");
         var client = CreateClient(handler);
 
-        await client.LogoutAsync(Ct);
+        await client.LogoutAsync(cancellationToken: Ct);
 
         Assert.Equal(HttpMethod.Post, handler.Request!.Method);
         Assert.Equal("https://matrix.example.org/_matrix/client/v3/logout", handler.Request.RequestUri!.ToString());
@@ -42,13 +42,13 @@ public class MatrixClientLifecycleTests
     {
         var handler = new StubHttpMessageHandler(HttpStatusCode.OK, "{}");
         var client = CreateClient(handler);
-        await client.LogoutAsync(Ct);
+        await client.LogoutAsync(cancellationToken: Ct);
         var logoutRequest = handler.Request;
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() => client.WhoAmIAsync(Ct));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => client.WhoAmIAsync(cancellationToken: Ct));
         // Shared endpoints do not fall back to unauthenticated requests (D21)
-        await Assert.ThrowsAsync<InvalidOperationException>(() => client.GetVersionsAsync(Ct));
-        await Assert.ThrowsAsync<InvalidOperationException>(() => client.LogoutAsync(Ct));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => client.GetVersionsAsync(cancellationToken: Ct));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => client.LogoutAsync(cancellationToken: Ct));
         Assert.Throws<InvalidOperationException>(() => client.Session);
 
         Assert.Equal("@joe:example.org", client.UserId);
@@ -61,7 +61,7 @@ public class MatrixClientLifecycleTests
     {
         var client = CreateClient(new StubHttpMessageHandler(HttpStatusCode.Unauthorized, RejectedToken));
 
-        await client.LogoutAsync(Ct);
+        await client.LogoutAsync(cancellationToken: Ct);
 
         Assert.Equal(MatrixClientState.LoggedOut, client.State);
     }
@@ -71,7 +71,7 @@ public class MatrixClientLifecycleTests
     {
         var client = CreateClient(new StubHttpMessageHandler(HttpStatusCode.BadGateway, "<html>Bad Gateway</html>", "text/html"));
 
-        await Assert.ThrowsAsync<MatrixException>(() => client.LogoutAsync(Ct));
+        await Assert.ThrowsAsync<MatrixException>(() => client.LogoutAsync(cancellationToken: Ct));
 
         Assert.Equal(MatrixClientState.Active, client.State);
     }
@@ -81,7 +81,7 @@ public class MatrixClientLifecycleTests
     {
         var client = CreateClient(new StubHttpMessageHandler(HttpStatusCode.Unauthorized, RejectedToken));
 
-        var exception = await Assert.ThrowsAsync<MatrixUnknownTokenException>(() => client.WhoAmIAsync(Ct));
+        var exception = await Assert.ThrowsAsync<MatrixUnknownTokenException>(() => client.WhoAmIAsync(cancellationToken: Ct));
 
         Assert.StartsWith("The access token is no longer valid and the session has no refresh token. Log in again.",
             exception.Message);
@@ -89,7 +89,7 @@ public class MatrixClientLifecycleTests
         Assert.Equal("Token expired", exception.ServerMessage);
         Assert.True(exception.SoftLogout);
         Assert.Equal(MatrixClientState.Invalidated, client.State);
-        await Assert.ThrowsAsync<InvalidOperationException>(() => client.WhoAmIAsync(Ct));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => client.WhoAmIAsync(cancellationToken: Ct));
     }
 
     [Fact]
@@ -98,7 +98,7 @@ public class MatrixClientLifecycleTests
         var client = CreateClient(new StubHttpMessageHandler(HttpStatusCode.Unauthorized, RejectedToken),
             RefreshableSession, autoRefreshToken: false);
 
-        var exception = await Assert.ThrowsAsync<MatrixUnknownTokenException>(() => client.WhoAmIAsync(Ct));
+        var exception = await Assert.ThrowsAsync<MatrixUnknownTokenException>(() => client.WhoAmIAsync(cancellationToken: Ct));
 
         Assert.StartsWith("The access token is no longer valid and automatic token refresh is disabled.",
             exception.Message);
@@ -111,7 +111,7 @@ public class MatrixClientLifecycleTests
         var client = CreateClient(new StubHttpMessageHandler(HttpStatusCode.Unauthorized, RejectedToken),
             autoRefreshToken: false);
 
-        var exception = await Assert.ThrowsAsync<MatrixUnknownTokenException>(() => client.WhoAmIAsync(Ct));
+        var exception = await Assert.ThrowsAsync<MatrixUnknownTokenException>(() => client.WhoAmIAsync(cancellationToken: Ct));
 
         Assert.StartsWith("The access token is no longer valid and the session has no refresh token.", exception.Message);
     }
@@ -121,7 +121,7 @@ public class MatrixClientLifecycleTests
     {
         var client = CreateClient(new StubHttpMessageHandler(HttpStatusCode.Unauthorized, RejectedToken));
 
-        await Assert.ThrowsAsync<MatrixUnknownTokenException>(() => client.GetVersionsAsync(Ct));
+        await Assert.ThrowsAsync<MatrixUnknownTokenException>(() => client.GetVersionsAsync(cancellationToken: Ct));
 
         Assert.Equal(MatrixClientState.Invalidated, client.State);
     }
@@ -132,7 +132,7 @@ public class MatrixClientLifecycleTests
         var client = CreateClient(new StubHttpMessageHandler(HttpStatusCode.Unauthorized,
             """{"errcode":"M_USER_LOCKED","soft_logout":true}"""));
 
-        await Assert.ThrowsAsync<MatrixUserLockedException>(() => client.WhoAmIAsync(Ct));
+        await Assert.ThrowsAsync<MatrixUserLockedException>(() => client.WhoAmIAsync(cancellationToken: Ct));
 
         Assert.NotEqual(MatrixClientState.Invalidated, client.State);
     }

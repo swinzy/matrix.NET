@@ -62,7 +62,7 @@ public class TokenRefreshTests
         var handler = CreateHomeserver();
         var client = CreateClient(handler);
 
-        var response = await client.WhoAmIAsync(Ct);
+        var response = await client.WhoAmIAsync(cancellationToken: Ct);
 
         Assert.Equal("@joe:example.org", response.UserId);
         Assert.Equal([WhoAmIPath, RefreshPath, WhoAmIPath], handler.Requests.Select(r => r.Path));
@@ -80,7 +80,7 @@ public class TokenRefreshTests
         var client = CreateClient(CreateHomeserver());
         var before = DateTimeOffset.UtcNow;
 
-        await client.WhoAmIAsync(Ct);
+        await client.WhoAmIAsync(cancellationToken: Ct);
 
         var session = client.Session;
         Assert.Equal("new-access", session.AccessToken);
@@ -95,7 +95,7 @@ public class TokenRefreshTests
     {
         var client = CreateClient(CreateHomeserver((HttpStatusCode.OK, """{"access_token":"new-access"}""")));
 
-        await client.WhoAmIAsync(Ct);
+        await client.WhoAmIAsync(cancellationToken: Ct);
 
         Assert.Equal("old-refresh", client.Session.RefreshToken);
         Assert.Null(client.Session.ExpiresAt);
@@ -114,7 +114,7 @@ public class TokenRefreshTests
         var client = CreateClient(handler, refreshHandler);
         client.SessionChanged += (_, e) => events.Add($"{e.Kind} with {client.Session.AccessToken}");
 
-        await client.WhoAmIAsync(Ct);
+        await client.WhoAmIAsync(cancellationToken: Ct);
 
         Assert.Equal(["saved new-access after 2 requests", "TokensRefreshed with new-access"], events);
     }
@@ -128,7 +128,7 @@ public class TokenRefreshTests
         var changes = new List<SessionChangeKind>();
         client.SessionChanged += (_, e) => changes.Add(e.Kind);
 
-        await Assert.ThrowsAsync<IOException>(() => client.WhoAmIAsync(Ct));
+        await Assert.ThrowsAsync<IOException>(() => client.WhoAmIAsync(cancellationToken: Ct));
 
         Assert.Equal("old-access", client.Session.AccessToken);
         Assert.Equal("old-refresh", client.Session.RefreshToken);
@@ -146,7 +146,7 @@ public class TokenRefreshTests
         var changes = new List<(SessionChangeKind, bool)>();
         client.SessionChanged += (_, e) => changes.Add((e.Kind, e.SoftLogout));
 
-        var exception = await Assert.ThrowsAsync<MatrixUnknownTokenException>(() => client.WhoAmIAsync(Ct));
+        var exception = await Assert.ThrowsAsync<MatrixUnknownTokenException>(() => client.WhoAmIAsync(cancellationToken: Ct));
 
         Assert.StartsWith("The access token expired and could not be refreshed. Log in again.", exception.Message);
         Assert.Equal("Refresh token revoked", exception.ServerMessage);
@@ -165,7 +165,7 @@ public class TokenRefreshTests
         var changes = new List<(SessionChangeKind, bool)>();
         client.SessionChanged += (_, e) => changes.Add((e.Kind, e.SoftLogout));
 
-        var exception = await Assert.ThrowsAsync<MatrixUnknownTokenException>(() => client.WhoAmIAsync(Ct));
+        var exception = await Assert.ThrowsAsync<MatrixUnknownTokenException>(() => client.WhoAmIAsync(cancellationToken: Ct));
 
         Assert.StartsWith("The access token expired and could not be refreshed. Log in again.", exception.Message);
         Assert.Equal(HttpStatusCode.Forbidden, exception.StatusCode);
@@ -182,7 +182,7 @@ public class TokenRefreshTests
         var client = CreateClient(CreateHomeserver(
             ((HttpStatusCode)429, """{"errcode":"M_LIMIT_EXCEEDED","retry_after_ms":2000}""")));
 
-        var exception = await Assert.ThrowsAsync<MatrixException>(() => client.WhoAmIAsync(Ct));
+        var exception = await Assert.ThrowsAsync<MatrixException>(() => client.WhoAmIAsync(cancellationToken: Ct));
 
         Assert.Equal(MatrixErrorCodes.LimitExceeded, exception.ErrorCode);
         Assert.Equal(MatrixClientState.Active, client.State);
@@ -194,7 +194,7 @@ public class TokenRefreshTests
         var handler = CreateHomeserver((HttpStatusCode.BadGateway, "<html>Bad Gateway</html>"));
         var client = CreateClient(handler);
 
-        await Assert.ThrowsAsync<MatrixException>(() => client.WhoAmIAsync(Ct));
+        await Assert.ThrowsAsync<MatrixException>(() => client.WhoAmIAsync(cancellationToken: Ct));
 
         Assert.Equal(MatrixClientState.Active, client.State);
         Assert.Equal("old-refresh", client.Session.RefreshToken);
@@ -206,7 +206,7 @@ public class TokenRefreshTests
         var client = CreateClient(CreateHomeserver(
             (HttpStatusCode.Unauthorized, """{"errcode":"M_USER_LOCKED","soft_logout":true}""")));
 
-        await Assert.ThrowsAsync<MatrixUserLockedException>(() => client.WhoAmIAsync(Ct));
+        await Assert.ThrowsAsync<MatrixUserLockedException>(() => client.WhoAmIAsync(cancellationToken: Ct));
 
         Assert.Equal(MatrixClientState.Locked, client.State);
     }
@@ -218,7 +218,7 @@ public class TokenRefreshTests
             request.RequestUri!.AbsolutePath == RefreshPath ? Refreshed : UnknownToken);
         var client = CreateClient(handler);
 
-        var exception = await Assert.ThrowsAsync<MatrixUnknownTokenException>(() => client.WhoAmIAsync(Ct));
+        var exception = await Assert.ThrowsAsync<MatrixUnknownTokenException>(() => client.WhoAmIAsync(cancellationToken: Ct));
 
         Assert.StartsWith("The access token expired and could not be refreshed.", exception.Message);
         Assert.Equal(MatrixClientState.Invalidated, client.State);
@@ -248,8 +248,8 @@ public class TokenRefreshTests
         });
         var client = CreateClient(handler);
 
-        await client.WhoAmIAsync(Ct);
-        await client.WhoAmIAsync(Ct);
+        await client.WhoAmIAsync(cancellationToken: Ct);
+        await client.WhoAmIAsync(cancellationToken: Ct);
 
         Assert.Equal(2, refreshes);
         Assert.Equal("newer-access", client.Session.AccessToken);
@@ -288,9 +288,9 @@ public class TokenRefreshTests
         var client = CreateClient(handler);
 
         // The first request refreshes; the second is rejected while that refresh is in flight
-        var first = client.WhoAmIAsync(Ct);
+        var first = client.WhoAmIAsync(cancellationToken: Ct);
         await refreshStarted.Task.WaitAsync(TimeSpan.FromSeconds(10), Ct);
-        var second = client.GetVersionsAsync(Ct);
+        var second = client.GetVersionsAsync(cancellationToken: Ct);
 
         await Task.WhenAll(first, second).WaitAsync(TimeSpan.FromSeconds(10), Ct);
 
@@ -326,7 +326,7 @@ public class TokenRefreshTests
         var tokensRefreshed = 0;
         client.SessionChanged += (_, e) => tokensRefreshed += e.Kind == SessionChangeKind.TokensRefreshed ? 1 : 0;
 
-        await Task.WhenAll(client.WhoAmIAsync(Ct), client.WhoAmIAsync(Ct)).WaitAsync(TimeSpan.FromSeconds(10), Ct);
+        await Task.WhenAll(client.WhoAmIAsync(cancellationToken: Ct), client.WhoAmIAsync(cancellationToken: Ct)).WaitAsync(TimeSpan.FromSeconds(10), Ct);
 
         Assert.Equal(1, refreshes);
         Assert.Equal(1, tokensRefreshed);
@@ -352,8 +352,8 @@ public class TokenRefreshTests
         });
         var client = CreateClient(handler);
 
-        var first = client.WhoAmIAsync(Ct);
-        var second = client.WhoAmIAsync(Ct);
+        var first = client.WhoAmIAsync(cancellationToken: Ct);
+        var second = client.WhoAmIAsync(cancellationToken: Ct);
 
         await Assert.ThrowsAsync<MatrixUnknownTokenException>(() => first);
         await Assert.ThrowsAsync<MatrixUnknownTokenException>(() => second);

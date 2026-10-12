@@ -40,7 +40,7 @@ public class LoginIntegrationTests(LoggedInClientFixture fixture)
             Type = "m.login.password",
             Identifier = new UserIdentifier { User = Settings.User! },
             Password = Settings.Password + "-wrong"
-        }, TestContext.Current.CancellationToken));
+        }, cancellationToken: TestContext.Current.CancellationToken));
 
         Assert.Equal(HttpStatusCode.Forbidden, exception.StatusCode);
         Assert.Equal("M_FORBIDDEN", exception.ErrorCode);
@@ -51,7 +51,7 @@ public class LoginIntegrationTests(LoggedInClientFixture fixture)
     {
         var server = CreateServer();
 
-        var flows = await server.GetSupportedLoginTypesAsync(TestContext.Current.CancellationToken);
+        var flows = await server.GetSupportedLoginTypesAsync(cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.Contains(flows, flow => flow.Type == "m.login.password");
     }

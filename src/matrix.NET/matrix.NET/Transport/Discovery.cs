@@ -8,15 +8,18 @@ namespace TeamBanana.MatrixDotNet.Transport;
 internal static class Discovery
 {
     public static async Task<ServerDiscovery?> DiscoverAsync(string userIdOrServerName,
-        Func<HttpClient>? httpClientSource, CancellationToken cancellationToken)
+        Func<HttpClient>? httpClientSource, IProgress<RequestWait>? progress, CancellationToken cancellationToken)
     {
         var hostname = GetHostname(userIdOrServerName);
         var wellKnownServer = new MatrixTransport(new Uri($"https://{hostname}/"), httpClientSource);
+        // One call for both requests, so the threshold applies to discovery as a whole
+        var waits = wellKnownServer.StartCall(progress);
 
         DiscoveryInformation information;
         try
         {
-            information = await wellKnownServer.SendAsync<DiscoveryInformation>(Endpoints.WellKnownClient, cancellationToken);
+            information = await wellKnownServer.SendAsync<DiscoveryInformation>(Endpoints.WellKnownClient, cancellationToken,
+                waits: waits);
         }
         catch (MatrixException e) when (e.StatusCode == HttpStatusCode.NotFound)
         {
@@ -39,8 +42,8 @@ internal static class Discovery
         VersionsResponse versions;
         try
         {
-            var server = httpClientSource is null ? new MatrixServer(homeserver) : new MatrixServer(homeserver, httpClientSource);
-            versions = await server.GetVersionsAsync(cancellationToken);
+            versions = await new MatrixTransport(homeserver, httpClientSource)
+                .SendAsync<VersionsResponse>(Endpoints.Versions, cancellationToken, waits: waits);
         }
         catch (Exception e) when (IsRequestFailure(e, cancellationToken))
         {

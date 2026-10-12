@@ -55,7 +55,7 @@ public class DiscoveryTests
             [VersionsUrl] = Ok(Versions)
         };
 
-        var discovery = await MatrixServer.DiscoverAsync("@alice:example.org:8448", new HttpClient(handler), Ct);
+        var discovery = await MatrixServer.DiscoverAsync("@alice:example.org:8448", new HttpClient(handler), cancellationToken: Ct);
 
         Assert.NotNull(discovery);
         Assert.Equal(new Uri("https://matrix.example.org"), discovery.Homeserver);
@@ -75,7 +75,7 @@ public class DiscoveryTests
     {
         var handler = new RoutingHandler { [WellKnownUrl] = Ok(WellKnown(baseUrl)), [versionsUrl] = Ok(Versions) };
 
-        var discovery = await MatrixServer.DiscoverAsync("example.org", new HttpClient(handler), Ct);
+        var discovery = await MatrixServer.DiscoverAsync("example.org", new HttpClient(handler), cancellationToken: Ct);
 
         Assert.Equal(new Uri(baseUrl), discovery!.Homeserver);
     }
@@ -90,7 +90,7 @@ public class DiscoveryTests
             [VersionsUrl] = Ok(Versions)
         };
 
-        Assert.NotNull(await MatrixServer.DiscoverAsync("example.org", new HttpClient(handler), Ct));
+        Assert.NotNull(await MatrixServer.DiscoverAsync("example.org", new HttpClient(handler), cancellationToken: Ct));
     }
 
     [Theory]
@@ -100,7 +100,7 @@ public class DiscoveryTests
     {
         var handler = new RoutingHandler { [WellKnownUrl] = Respond(HttpStatusCode.NotFound, body) };
 
-        Assert.Null(await MatrixServer.DiscoverAsync("example.org", new HttpClient(handler), Ct));
+        Assert.Null(await MatrixServer.DiscoverAsync("example.org", new HttpClient(handler), cancellationToken: Ct));
     }
 
     public static TheoryData<string, Func<HttpResponseMessage>> UnusableInformation => new()
@@ -123,7 +123,7 @@ public class DiscoveryTests
         var handler = new RoutingHandler { [WellKnownUrl] = wellKnown };
 
         var exception = await Assert.ThrowsAsync<MatrixDiscoveryException>(() =>
-            MatrixServer.DiscoverAsync("example.org", new HttpClient(handler), Ct));
+            MatrixServer.DiscoverAsync("example.org", new HttpClient(handler), cancellationToken: Ct));
 
         Assert.True(exception.Kind == DiscoveryFailureKind.FailPrompt, reason);
         Assert.Equal([WellKnownUrl], handler.Requested);
@@ -138,7 +138,7 @@ public class DiscoveryTests
         var handler = new RoutingHandler { [WellKnownUrl] = Ok(WellKnown(baseUrl)) };
 
         var exception = await Assert.ThrowsAsync<MatrixDiscoveryException>(() =>
-            MatrixServer.DiscoverAsync("example.org", new HttpClient(handler), Ct));
+            MatrixServer.DiscoverAsync("example.org", new HttpClient(handler), cancellationToken: Ct));
 
         Assert.Equal(DiscoveryFailureKind.FailError, exception.Kind);
         Assert.Contains(baseUrl, exception.Message);
@@ -158,7 +158,7 @@ public class DiscoveryTests
         var handler = new RoutingHandler { [WellKnownUrl] = Ok(WellKnown()), [VersionsUrl] = versions };
 
         var exception = await Assert.ThrowsAsync<MatrixDiscoveryException>(() =>
-            MatrixServer.DiscoverAsync("example.org", new HttpClient(handler), Ct));
+            MatrixServer.DiscoverAsync("example.org", new HttpClient(handler), cancellationToken: Ct));
 
         Assert.True(exception.Kind == DiscoveryFailureKind.FailError, reason);
         Assert.NotNull(exception.InnerException);
@@ -177,7 +177,7 @@ public class DiscoveryTests
             [VersionsUrl] = Ok(Versions)
         };
 
-        var discovery = await MatrixServer.DiscoverAsync("example.org", new HttpClient(handler), Ct);
+        var discovery = await MatrixServer.DiscoverAsync("example.org", new HttpClient(handler), cancellationToken: Ct);
 
         // A problem with the identity server does not affect the homeserver
         Assert.Equal(new Uri("https://matrix.example.org"), discovery!.Homeserver);
@@ -200,7 +200,7 @@ public class DiscoveryTests
         };
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
-            MatrixServer.DiscoverAsync("example.org", new HttpClient(handler), cancellation.Token));
+            MatrixServer.DiscoverAsync("example.org", new HttpClient(handler), cancellationToken: cancellation.Token));
     }
 
     [Fact]
@@ -211,7 +211,7 @@ public class DiscoveryTests
             """{"m.homeserver":{"base_url":"https://new.example.org"},"m.identity_server":{"base_url":"https://id.example.org"}}}""");
 
         var login = await new MatrixServer(new Uri("https://matrix.example.org"), new HttpClient(handler))
-            .LoginAsync(Login(), Ct);
+            .LoginAsync(Login(), cancellationToken: Ct);
 
         Assert.Equal("https://new.example.org", login.WellKnown?.Homeserver?.BaseUrl);
         Assert.Equal("https://id.example.org", login.WellKnown?.IdentityServer?.BaseUrl);
@@ -229,7 +229,7 @@ public class DiscoveryTests
             $$"""{"user_id":"@a:example.org","access_token":"t","device_id":"D"{{wellKnown}}}""");
 
         var login = await new MatrixServer(new Uri("https://matrix.example.org"), new HttpClient(handler))
-            .LoginAsync(Login(), Ct);
+            .LoginAsync(Login(), cancellationToken: Ct);
 
         Assert.Null(login.WellKnown);
         Assert.Equal("t", login.Session.AccessToken);

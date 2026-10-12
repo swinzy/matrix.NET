@@ -1,7 +1,7 @@
 namespace TeamBanana.MatrixDotNet;
 
 /// <summary>
-/// The result of <see cref="MatrixServer.DiscoverAsync(string, CancellationToken)"/>: a homeserver that
+/// The result of <see cref="MatrixServer.DiscoverAsync(string, IProgress{RequestWait}?, CancellationToken)"/>: a homeserver that
 /// answered <c>GET /versions</c> (D36).
 /// </summary>
 public sealed class ServerDiscovery

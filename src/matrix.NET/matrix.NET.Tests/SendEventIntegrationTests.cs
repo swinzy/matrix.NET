@@ -16,7 +16,7 @@ public class SendEventIntegrationTests(LoggedInClientFixture fixture)
 
         var first = await client.SendMessageAsync(roomId, new TextMessageContent("matrix.NET test message"), cancellationToken: Ct);
         var repeated = await client.SendMessageAsync(roomId, new TextMessageContent("matrix.NET test message"),
-            first.TransactionId, Ct);
+            first.TransactionId, cancellationToken: Ct);
         var another = await client.SendMessageAsync(roomId, new TextMessageContent("matrix.NET test message"), cancellationToken: Ct);
 
         Assert.StartsWith("$", first.EventId);

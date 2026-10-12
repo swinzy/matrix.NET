@@ -38,7 +38,7 @@ public class SessionChangeTests
     {
         var (client, changes) = CreateClient(LoggedOutOk);
 
-        await client.LogoutAsync(Ct);
+        await client.LogoutAsync(cancellationToken: Ct);
 
         Assert.Equal([(SessionChangeKind.LoggedOut, false, MatrixClientState.LoggedOut)], changes);
     }
@@ -48,7 +48,7 @@ public class SessionChangeTests
     {
         var (client, changes) = CreateClient(UnknownToken);
 
-        await Assert.ThrowsAsync<MatrixUnknownTokenException>(() => client.WhoAmIAsync(Ct));
+        await Assert.ThrowsAsync<MatrixUnknownTokenException>(() => client.WhoAmIAsync(cancellationToken: Ct));
 
         // The handler already saw the new state
         Assert.Equal([(SessionChangeKind.Invalidated, true, MatrixClientState.Invalidated)], changes);
@@ -59,7 +59,7 @@ public class SessionChangeTests
     {
         var (client, changes) = CreateClient(Ok);
 
-        await client.WhoAmIAsync(Ct);
+        await client.WhoAmIAsync(cancellationToken: Ct);
 
         Assert.Empty(changes);
     }
@@ -69,9 +69,9 @@ public class SessionChangeTests
     {
         var (client, changes) = CreateClient(Locked, Locked);
 
-        var exception = await Assert.ThrowsAsync<MatrixUserLockedException>(() => client.WhoAmIAsync(Ct));
+        var exception = await Assert.ThrowsAsync<MatrixUserLockedException>(() => client.WhoAmIAsync(cancellationToken: Ct));
         // Still sent while locked, so the unlock can be detected
-        await Assert.ThrowsAsync<MatrixUserLockedException>(() => client.WhoAmIAsync(Ct));
+        await Assert.ThrowsAsync<MatrixUserLockedException>(() => client.WhoAmIAsync(cancellationToken: Ct));
 
         Assert.True(exception.SoftLogout);
         Assert.Equal(MatrixClientState.Locked, client.State);
@@ -84,8 +84,8 @@ public class SessionChangeTests
     {
         var (client, changes) = CreateClient(Locked, Ok);
 
-        await Assert.ThrowsAsync<MatrixUserLockedException>(() => client.WhoAmIAsync(Ct));
-        await client.WhoAmIAsync(Ct);
+        await Assert.ThrowsAsync<MatrixUserLockedException>(() => client.WhoAmIAsync(cancellationToken: Ct));
+        await client.WhoAmIAsync(cancellationToken: Ct);
 
         Assert.Equal(MatrixClientState.Active, client.State);
         Assert.Equal(
@@ -99,8 +99,8 @@ public class SessionChangeTests
     {
         var (client, changes) = CreateClient(Locked, Ok);
 
-        await Assert.ThrowsAsync<MatrixUserLockedException>(() => client.WhoAmIAsync(Ct));
-        await client.GetVersionsAsync(Ct);
+        await Assert.ThrowsAsync<MatrixUserLockedException>(() => client.WhoAmIAsync(cancellationToken: Ct));
+        await client.GetVersionsAsync(cancellationToken: Ct);
 
         Assert.Equal(MatrixClientState.Locked, client.State);
         Assert.Single(changes);
@@ -111,8 +111,8 @@ public class SessionChangeTests
     {
         var (client, changes) = CreateClient(Locked, LoggedOutOk);
 
-        await Assert.ThrowsAsync<MatrixUserLockedException>(() => client.WhoAmIAsync(Ct));
-        await client.LogoutAsync(Ct);
+        await Assert.ThrowsAsync<MatrixUserLockedException>(() => client.WhoAmIAsync(cancellationToken: Ct));
+        await client.LogoutAsync(cancellationToken: Ct);
 
         Assert.Equal(MatrixClientState.LoggedOut, client.State);
         Assert.Equal(SessionChangeKind.LoggedOut, changes[^1].Kind);
@@ -123,8 +123,8 @@ public class SessionChangeTests
     {
         var (client, changes) = CreateClient(Locked, UnknownToken);
 
-        await Assert.ThrowsAsync<MatrixUserLockedException>(() => client.WhoAmIAsync(Ct));
-        await Assert.ThrowsAsync<MatrixUnknownTokenException>(() => client.WhoAmIAsync(Ct));
+        await Assert.ThrowsAsync<MatrixUserLockedException>(() => client.WhoAmIAsync(cancellationToken: Ct));
+        await Assert.ThrowsAsync<MatrixUnknownTokenException>(() => client.WhoAmIAsync(cancellationToken: Ct));
 
         Assert.Equal(MatrixClientState.Invalidated, client.State);
         Assert.Equal(SessionChangeKind.Invalidated, changes[^1].Kind);
@@ -138,7 +138,7 @@ public class SessionChangeTests
         var laterHandlerRan = false;
         client.SessionChanged += (_, _) => laterHandlerRan = true;
 
-        await Assert.ThrowsAsync<MatrixUnknownTokenException>(() => client.WhoAmIAsync(Ct));
+        await Assert.ThrowsAsync<MatrixUnknownTokenException>(() => client.WhoAmIAsync(cancellationToken: Ct));
 
         Assert.Single(changes);
         Assert.True(laterHandlerRan);

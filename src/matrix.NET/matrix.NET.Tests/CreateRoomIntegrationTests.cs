@@ -28,7 +28,7 @@ public class CreateRoomIntegrationTests(LoggedInClientFixture fixture)
                 }
             ],
             PowerLevelContentOverride = new JsonObject { ["events_default"] = 50 }
-        }, Ct);
+        }, cancellationToken: Ct);
 
         // A room's creation is short, so the whole of it fits in the initial timeline
         var filter = """{"room":{"rooms":[""" + $"\"{roomId}\"" + """],"timeline":{"limit":50}}}""";
@@ -46,7 +46,7 @@ public class CreateRoomIntegrationTests(LoggedInClientFixture fixture)
         Assert.Equal(50, (int?)state["m.room.power_levels"].Content["events_default"]);
 
         var taken = await Assert.ThrowsAsync<MatrixException>(() =>
-            client.CreateRoomAsync(new CreateRoomRequest { RoomAliasName = aliasName }, Ct));
+            client.CreateRoomAsync(new CreateRoomRequest { RoomAliasName = aliasName }, cancellationToken: Ct));
         Assert.Equal(MatrixErrorCodes.RoomInUse, taken.ErrorCode);
 
         await client.LeaveRoomAsync(roomId, cancellationToken: Ct);

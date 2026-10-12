@@ -13,7 +13,7 @@ namespace TeamBanana.MatrixDotNet;
 /// </summary>
 /// <remarks>
 /// The set of subclasses is fixed by the library. To send a <c>msgtype</c> it does not model, use
-/// <see cref="MatrixClient.SendEventAsync(string, string, JsonObject, string?, CancellationToken)"/>.
+/// <see cref="MatrixClient.SendEventAsync(string, string, JsonObject, string?, IProgress{RequestWait}?, CancellationToken)"/>.
 /// </remarks>
 [JsonConverter(typeof(MessageContentConverter))]
 public abstract class MessageContent

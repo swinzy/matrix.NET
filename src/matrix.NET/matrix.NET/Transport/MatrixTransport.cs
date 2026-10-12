@@ -37,6 +37,8 @@ internal sealed class MatrixTransport
     private readonly Func<string?>? _accessTokenSource;
     private readonly Func<VersionsResponse?>? _cachedVersions;
     private readonly RateLimitRetry _rateLimitRetry;
+    private readonly TimeSpan _waitReportThreshold;
+    private readonly TimeProvider _time;
 
     /// <param name="homeserver">Base URL of the homeserver; may include a path.</param>
     /// <param name="clientSource">
@@ -50,53 +52,70 @@ internal sealed class MatrixTransport
     /// Never fetches (D26).
     /// </param>
     /// <param name="rateLimitRetry">How rate-limited requests are retried; the defaults when omitted (D37).</param>
+    /// <param name="waitReportThreshold">
+    /// How long a call may take before its waits are reported (D38); the default when omitted.
+    /// </param>
+    /// <param name="time">Times calls for reporting their waits; the system clock when omitted.</param>
     public MatrixTransport(Uri homeserver, Func<HttpClient>? clientSource = null,
         Func<string?>? accessTokenSource = null, Func<VersionsResponse?>? cachedVersions = null,
-        RateLimitRetry? rateLimitRetry = null)
+        RateLimitRetry? rateLimitRetry = null, TimeSpan? waitReportThreshold = null, TimeProvider? time = null)
     {
         Homeserver = WithTrailingSlash(homeserver);
         _clientSource = clientSource ?? (() => SharedClient);
         _accessTokenSource = accessTokenSource;
         _cachedVersions = cachedVersions;
         _rateLimitRetry = rateLimitRetry ?? RateLimitRetry.Default;
+        _waitReportThreshold = waitReportThreshold ?? WaitReporter.DefaultThreshold;
+        _time = time ?? TimeProvider.System;
     }
 
     public Uri Homeserver { get; }
+
+    /// <summary>
+    /// Starts timing a public call that reports its waits to <paramref name="progress"/> (D38), or returns
+    /// <see langword="null"/> if it has none. Pass the result to every request the call sends.
+    /// </summary>
+    public WaitReporter? StartCall(IProgress<RequestWait>? progress) =>
+        WaitReporter.Start(progress, _waitReportThreshold, _time);
 
     /// <summary>
     /// Sends a request and deserialises the response, retrying it if the homeserver refuses it for rate
     /// limiting (D37). <paramref name="timeout"/> applies to each attempt, overrides
     /// <see cref="DefaultTimeout"/>, and <see cref="Timeout.InfiniteTimeSpan"/> disables it. A timeout
     /// throws <see cref="TaskCanceledException"/> with an inner <see cref="TimeoutException"/>.
+    /// <paramref name="waits"/>, from <see cref="StartCall"/>, is told about the waits (D38).
     /// </summary>
     public Task<TResponse> SendAsync<TResponse>(Endpoint endpoint, CancellationToken cancellationToken = default,
-        TimeSpan? timeout = null) =>
-        SendCoreAsync<TResponse>(endpoint, null, null, timeout, cancellationToken);
+        TimeSpan? timeout = null, WaitReporter? waits = null) =>
+        SendCoreAsync<TResponse>(endpoint, null, null, timeout, waits, cancellationToken);
 
     /// <inheritdoc cref="SendAsync{TResponse}"/>
     public Task<TResponse> SendAsync<TRequest, TResponse>(Endpoint endpoint, TRequest body,
-        CancellationToken cancellationToken = default, TimeSpan? timeout = null) =>
-        SendCoreAsync<TResponse>(endpoint, body, typeof(TRequest), timeout, cancellationToken);
+        CancellationToken cancellationToken = default, TimeSpan? timeout = null, WaitReporter? waits = null) =>
+        SendCoreAsync<TResponse>(endpoint, body, typeof(TRequest), timeout, waits, cancellationToken);
 
     private async Task<TResponse> SendCoreAsync<TResponse>(Endpoint endpoint, object? body, Type? bodyType,
-        TimeSpan? timeout, CancellationToken cancellationToken)
+        TimeSpan? timeout, WaitReporter? waits, CancellationToken cancellationToken)
     {
         for (var retries = 0;; retries++)
         {
             try
             {
-                return await SendOnceAsync<TResponse>(endpoint, body, bodyType, timeout, cancellationToken);
+                return await SendOnceAsync<TResponse>(endpoint, body, bodyType, timeout, waits, cancellationToken);
             }
             catch (MatrixException e) when (_rateLimitRetry.GetWait(e, retries) is { } wait)
             {
+                waits?.RateLimited(wait);
                 await _rateLimitRetry.Delay(wait, cancellationToken);
             }
         }
     }
 
     private async Task<TResponse> SendOnceAsync<TResponse>(Endpoint endpoint, object? body, Type? bodyType,
-        TimeSpan? timeout, CancellationToken cancellationToken)
+        TimeSpan? timeout, WaitReporter? waits, CancellationToken cancellationToken)
     {
+        // Only a request that does more than read can leave a cancelled call's outcome unknown
+        using var awaiting = waits?.AwaitResponse(mayTakeEffect: endpoint.Method != HttpMethod.Get);
         var effectiveTimeout = timeout ?? DefaultTimeout;
         using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeoutSource.CancelAfter(effectiveTimeout);

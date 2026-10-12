@@ -182,7 +182,7 @@ public class RateLimitRetryTests
             }
         });
 
-        await client.WhoAmIAsync(Ct);
+        await client.WhoAmIAsync(cancellationToken: Ct);
 
         Assert.Equal([TimeSpan.FromSeconds(1)], waits);
     }

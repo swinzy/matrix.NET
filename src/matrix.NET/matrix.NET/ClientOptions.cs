@@ -52,7 +52,15 @@ public sealed class ClientOptions
     /// </summary>
     public TimeSpan MaxRateLimitWait { get; init; } = RateLimitRetry.DefaultMaxWait;
 
-    // Replaced by tests, to expire the cache without waiting
+    /// <summary>
+    /// How long a call may take before its waits are reported to the <see cref="IProgress{T}"/> passed to
+    /// it, so the app can tell the user what it is waiting for and offer to cancel (D38). Defaults to three
+    /// seconds; a wait expected to take the call past it, such as a rate limit, is reported before it
+    /// starts. <see cref="Timeout.InfiniteTimeSpan"/> turns reporting off.
+    /// </summary>
+    public TimeSpan WaitReportThreshold { get; init; } = WaitReporter.DefaultThreshold;
+
+    // Replaced by tests, to expire the cache and time calls without waiting
     internal TimeProvider TimeProvider { get; init; } = TimeProvider.System;
 
     // Replaced by tests, so rate-limit retries do not really wait

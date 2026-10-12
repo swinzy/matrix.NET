@@ -124,14 +124,14 @@ public class HomeserverCompatibilityTests
         var handler = new CountingHandler();
         var server = new MatrixServer(Homeserver, new HttpClient(handler), new ServerOptions { TimeProvider = time });
 
-        var first = await server.GetVersionsAsync(Ct);
+        var first = await server.GetVersionsAsync(cancellationToken: Ct);
         time.Now += TimeSpan.FromHours(23);
-        var second = await server.GetVersionsAsync(Ct);
+        var second = await server.GetVersionsAsync(cancellationToken: Ct);
         Assert.Same(first, second);
         Assert.Equal(1, handler.Count);
 
         time.Now += TimeSpan.FromHours(1);
-        Assert.NotSame(first, await server.GetVersionsAsync(Ct));
+        Assert.NotSame(first, await server.GetVersionsAsync(cancellationToken: Ct));
         Assert.Equal(2, handler.Count);
     }
 
@@ -142,8 +142,8 @@ public class HomeserverCompatibilityTests
         var server = new MatrixServer(Homeserver, new HttpClient(handler),
             new ServerOptions { VersionsCacheLifetime = TimeSpan.Zero });
 
-        await server.GetVersionsAsync(Ct);
-        await server.GetVersionsAsync(Ct);
+        await server.GetVersionsAsync(cancellationToken: Ct);
+        await server.GetVersionsAsync(cancellationToken: Ct);
 
         Assert.Equal(2, handler.Count);
     }
@@ -156,13 +156,13 @@ public class HomeserverCompatibilityTests
         var server = new MatrixServer(Homeserver, new HttpClient(handler),
             new ServerOptions { VersionsCacheLifetime = Timeout.InfiniteTimeSpan, TimeProvider = time });
 
-        await server.GetVersionsAsync(Ct);
+        await server.GetVersionsAsync(cancellationToken: Ct);
         time.Now += TimeSpan.FromDays(3650);
-        await server.GetVersionsAsync(Ct);
+        await server.GetVersionsAsync(cancellationToken: Ct);
         Assert.Equal(1, handler.Count);
 
-        await server.RefreshVersionsAsync(Ct);
-        await server.GetVersionsAsync(Ct);
+        await server.RefreshVersionsAsync(cancellationToken: Ct);
+        await server.GetVersionsAsync(cancellationToken: Ct);
         Assert.Equal(2, handler.Count);
     }
 
@@ -172,11 +172,11 @@ public class HomeserverCompatibilityTests
         var handler = new CountingHandler();
         var server = new MatrixServer(Homeserver, new HttpClient(handler));
 
-        await server.GetVersionsAsync(Ct);
-        var refreshed = await server.RefreshVersionsAsync(Ct);
+        await server.GetVersionsAsync(cancellationToken: Ct);
+        var refreshed = await server.RefreshVersionsAsync(cancellationToken: Ct);
 
         Assert.Equal(2, handler.Count);
-        Assert.Same(refreshed, await server.GetVersionsAsync(Ct));
+        Assert.Same(refreshed, await server.GetVersionsAsync(cancellationToken: Ct));
     }
 
     [Fact]
@@ -185,8 +185,8 @@ public class HomeserverCompatibilityTests
         var handler = new CountingHandler { FailFirst = true };
         var server = new MatrixServer(Homeserver, new HttpClient(handler));
 
-        await Assert.ThrowsAsync<MatrixException>(() => server.GetVersionsAsync(Ct));
-        await server.GetVersionsAsync(Ct);
+        await Assert.ThrowsAsync<MatrixException>(() => server.GetVersionsAsync(cancellationToken: Ct));
+        await server.GetVersionsAsync(cancellationToken: Ct);
 
         Assert.Equal(2, handler.Count);
     }
@@ -197,7 +197,7 @@ public class HomeserverCompatibilityTests
         var handler = new CountingHandler { Gate = new TaskCompletionSource() };
         var server = new MatrixServer(Homeserver, new HttpClient(handler));
 
-        var calls = Enumerable.Range(0, 5).Select(_ => server.GetVersionsAsync(Ct)).ToList();
+        var calls = Enumerable.Range(0, 5).Select(_ => server.GetVersionsAsync(cancellationToken: Ct)).ToList();
         handler.Gate.SetResult();
         var responses = await Task.WhenAll(calls);
 
@@ -211,8 +211,8 @@ public class HomeserverCompatibilityTests
         var handler = new CountingHandler { Body = """{"versions":["v1.1","v1.2"]}""" };
         var server = new MatrixServer(Homeserver, new HttpClient(handler));
 
-        Assert.False(await server.SupportsAsync(MatrixFeature.TokenRefresh, Ct));
-        Assert.False(await server.SupportsAsync(MatrixFeature.TokenRefresh, Ct));
+        Assert.False(await server.SupportsAsync(MatrixFeature.TokenRefresh, cancellationToken: Ct));
+        Assert.False(await server.SupportsAsync(MatrixFeature.TokenRefresh, cancellationToken: Ct));
         Assert.Equal(1, handler.Count);
     }
 
@@ -222,8 +222,8 @@ public class HomeserverCompatibilityTests
         var handler = new CountingHandler { Body = """{"versions":["v1.3"]}""" };
         var client = new MatrixClient(Session, new HttpClient(handler));
 
-        Assert.True(await client.SupportsAsync(MatrixFeature.TokenRefresh, Ct));
-        await client.GetVersionsAsync(Ct);
+        Assert.True(await client.SupportsAsync(MatrixFeature.TokenRefresh, cancellationToken: Ct));
+        await client.GetVersionsAsync(cancellationToken: Ct);
 
         Assert.Equal(1, handler.Count);
         Assert.Equal("secret-access", handler.LastAuthorization);
@@ -234,12 +234,12 @@ public class HomeserverCompatibilityTests
     {
         var handler = new CountingHandler();
         var client = new MatrixClient(Session, new HttpClient(handler));
-        await client.GetVersionsAsync(Ct);
-        await client.LogoutAsync(Ct);
+        await client.GetVersionsAsync(cancellationToken: Ct);
+        await client.LogoutAsync(cancellationToken: Ct);
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() => client.GetVersionsAsync(Ct));
-        await Assert.ThrowsAsync<InvalidOperationException>(() => client.RefreshVersionsAsync(Ct));
-        await Assert.ThrowsAsync<InvalidOperationException>(() => client.SupportsAsync(MatrixFeature.TokenRefresh, Ct));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => client.GetVersionsAsync(cancellationToken: Ct));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => client.RefreshVersionsAsync(cancellationToken: Ct));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => client.SupportsAsync(MatrixFeature.TokenRefresh, cancellationToken: Ct));
     }
 
     [Fact]

@@ -9,7 +9,7 @@ public class DiscoveryIntegrationTests
     [Fact(Explicit = true)]
     public async Task DiscoverAsync_FindsMatrixOrg()
     {
-        var discovery = await MatrixServer.DiscoverAsync("@someone:matrix.org", TestContext.Current.CancellationToken);
+        var discovery = await MatrixServer.DiscoverAsync("@someone:matrix.org", cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.NotNull(discovery);
         Assert.Equal("https", discovery.Homeserver.Scheme);

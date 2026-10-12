@@ -34,6 +34,7 @@ others. Neither is better in general; they suit different priorities.
 7. [Appendix: sync loops in other SDKs](#appendix-sync-loops-in-other-sdks)
 8. [Appendix: server discovery in other SDKs](#appendix-server-discovery-in-other-sdks)
 9. [Appendix: rate limiting in other SDKs](#appendix-rate-limiting-in-other-sdks)
+10. [Appendix: research on waiting and retries](#appendix-research-on-waiting-and-retries)
 
 ## 1. Project layout
 
@@ -58,9 +59,9 @@ and is not part of the repository.
 | Type | Role |
 |---|---|
 | `MatrixServer` | Unauthenticated endpoints of a homeserver: supported login types, login and the shared endpoints; static `DiscoverAsync` (D36) |
-| `ServerOptions` | Options for `MatrixServer`: automatic decompression (D25), `/versions` cache lifetime (D25), rate-limit retries (D37) |
+| `ServerOptions` | Options for `MatrixServer`: automatic decompression (D25), `/versions` cache lifetime (D25), rate-limit retries (D37), wait report threshold (D38) |
 | `MatrixClient` | Authenticated endpoints through a `MatrixSession`: `WhoAmIAsync`, `LogoutAsync`, `SyncAsync`, `GetJoinedRoomsAsync`, `CreateRoomAsync`, `JoinRoomAsync`, `LeaveRoomAsync`, `SendMessageAsync`, `SendEventAsync`, `RedactEventAsync` and the shared endpoints so far; lifecycle `State` and `SessionChanged` (D14, D21); automatic token refresh (D12) |
-| `ClientOptions` | Options for `MatrixClient`: automatic token refresh, refresh handler, automatic decompression, `/versions` cache lifetime (D25), rate-limit retries (D37) |
+| `ClientOptions` | Options for `MatrixClient`: automatic token refresh, refresh handler, automatic decompression, `/versions` cache lifetime (D25), rate-limit retries (D37), wait report threshold (D38) |
 | `ISessionRefreshHandler` / `DiscardingSessionRefreshHandler` | Saves refreshed sessions before their tokens are used; the discarding one saves nothing (D23) |
 | `WhoAmIResponse` | Response of `GET /account/whoami` |
 | `LoginRequest` | Body of `POST /login` |
@@ -73,6 +74,8 @@ and is not part of the repository.
 | `LoginFlow` | One entry of `GET /login`'s `flows` |
 | `VersionsResponse` | Response of `GET /versions`, read-only as it is cached: supported spec versions and unstable features, `MeetsMinimumVersion` (D24) and `Supports(feature)` (D26) |
 | `Transport.RateLimitRetry` (internal) | Whether and how long to wait before retrying a rate-limited request (D37) |
+| `RequestWait` / `RequestWaitReason` | A wait past the threshold, reported through a call's `IProgress<RequestWait>` (D38) |
+| `Transport.WaitReporter` (internal) | Times one public call across its requests and reports its waits (D38) |
 | `Transport.VersionsCache` (internal) | One instance's cached `/versions`, with its lifetime (D25) |
 | `IIdentifier` / `UserIdentifier` | User identifier objects (`m.id.user`) |
 | `MatrixException` | A Matrix error response (`errcode`, `error` as `ServerMessage`) or a non-Matrix HTTP failure; `RetryAfter` when the homeserver asks for a wait (D33) |
@@ -129,6 +132,11 @@ Public types never touch `HttpClient` directly. Each endpoint method makes one
 
 The request is built from its parts inside the transport rather than passed in, so the
 future refresh-and-retry logic can rebuild it (D16).
+
+A request refused for rate limiting is sent again after the wait the homeserver asks for
+(D37). Each public call starts a `WaitReporter` when the app passes an `IProgress<RequestWait>`;
+the transport tells it about each rate-limit wait and each request it sends, and it reports
+those that take the call past the threshold (D38).
 
 `MatrixServer` can be constructed from a homeserver `Uri` alone, which uses the shared
 client, or together with an `HttpClient` for tests.
@@ -471,12 +479,82 @@ Checked against Synapse with its default limits:
 - **Short waits are an expected part of normal use,** e.g. sending several messages in a row.
   Leaving every one to the app would make each app write the same retry loop.
 - **Long waits are a decision.** Synapse asks for over five minutes after repeated failed
-  logins; a call that silently stalls that long looks like a hang. Above the limit the app
-  gets the error and the wait, and can tell the user.
+  logins; a call that waits that long looks like a hang. Above the limit the app gets the
+  error and the wait, and can tell the user. Waits below it that take a call past three
+  seconds are reported to the app as they start (D38).
 - **Bounded by count as well as length,** so a homeserver that keeps refusing cannot hold a
   call indefinitely: at most about 3 minutes with the defaults.
 - **The defaults** follow Trixnity's 3 retries, and a one-minute cap close to matrix-rust-sdk's
   maximum backoff (see the appendix and [behaviour-differences.md](behaviour-differences.md)).
+
+#### D38. Waits longer than three seconds are reported to the app (Decided)
+
+A call that has taken, or is about to take, longer than three seconds tells the app what it is
+waiting for, so the app can say so and let the user cancel, rather than looking frozen, or
+finished when it is not. The library still waits as before (D37); it only reports.
+
+- **How:** every public method that sends requests takes an optional
+  `IProgress<RequestWait>`, just before its `CancellationToken`. The one exception is
+  `SyncAsync`: holding the request open is how a long poll works, and the sync loop reports
+  its own state (D34).
+- **When:** once the call passes `WaitReportThreshold` on `ClientOptions` or `ServerOptions`,
+  three seconds by default. It is measured from the start of the call, across every request
+  the call sends, including rate-limit retries and a token refresh. `DiscoverAsync` has no
+  options and always uses three seconds. `Timeout.InfiniteTimeSpan` turns reporting off.
+  - **A rate-limit wait** is reported before it starts, if it takes the call past the
+    threshold, with how long it will take.
+  - **Waiting for a response** is reported once the call passes the threshold, with no
+    expected duration. A request sent after the call has already passed it, such as one
+    sent again after a rate limit, is reported as soon as it is sent.
+  - **Waiting for another request's token refresh** or `/versions` fetch counts as waiting
+    for a response.
+- **What it says:**
+  - `Reason`: `RateLimited` or `AwaitingResponse`;
+  - `Elapsed`: how long the call has taken so far;
+  - `ExpectedWait`: how long until the request is sent again, for a rate limit; otherwise
+    `null`;
+  - `MayHaveTakenEffect`: whether cancelling now leaves the outcome unknown. It is `false`
+    while waiting out a rate limit, since the homeserver refused the request; for requests
+    that only read; and while refreshing the token, since the rejected request was not
+    carried out. It is `true` while a request that changes something is with the homeserver.
+- **Several reports per call** are possible, e.g. a rate limit and then the response to the
+  request sent again; the latest describes the call. Nothing is reported when the call ends:
+  the task completing says that.
+- An exception thrown by the app's `IProgress` is swallowed, as with the library's events, so
+  it cannot change the call's result. `Progress<T>` runs its handler on the context it was
+  created on, e.g. a UI thread.
+
+**Why:** (see the [research appendix](#appendix-research-on-waiting-and-retries) for the
+sources)
+
+- **Users notice waits after a second or two.** Nielsen puts the limit for an unbroken flow of
+  thought at one second, and says waits over ten seconds need feedback and a way to
+  interrupt. Nah found about two seconds to be what users tolerate without feedback. Three
+  seconds is where the app should start saying something; a shorter wait would be gone
+  before the user could read a message about it.
+- **Report, not give up.** Both studies find that users wait longer when told what is
+  happening. So the limits of D37 stay, and long waits become visible instead of shorter.
+- **Only the library knows what a wait is.** The app sees a slow call; it cannot tell a rate
+  limit, with a known end, from a homeserver that has not answered.
+- **Cancelling means different things at different moments.** Before the homeserver has a
+  request, cancelling is clean; while it has one, the outcome is unknown. `MayHaveTakenEffect`
+  says which, so the app can offer cancel honestly and knows whether to check afterwards.
+  Other SDKs settle this inside their send queues: matrix-js-sdk does not let a send be
+  cancelled while it is being sent, and matrix-rust-sdk redacts an event whose send turns
+  out to have succeeded after it was cancelled.
+- **Per call, not an event on the client.** The app needs to know which action is waiting:
+  which message, which button. A per-call `IProgress` pairs each report with the call that
+  made it, and `Progress<T>` already returns to the UI thread. An event on `MatrixClient`
+  could not tell calls apart and would run on a thread-pool thread.
+- **Measured over the whole call,** because the user waits for the call, not for one of its
+  requests; Microsoft's guidance is that the total of timeouts and delays, not each one, must
+  meet the latency the operation needs.
+- **The cost:** the new parameter comes before `CancellationToken`, so callers that pass the
+  token by position must name it (`cancellationToken: ct`). Overloads without it would double
+  the number of methods.
+
+Other SDKs only log their rate-limit waits, except matrix-nio, which passes the `429` response
+to the app's callbacks (see [behaviour-differences.md](behaviour-differences.md)).
 
 ### 3.2 Authenticated session design
 
@@ -2031,3 +2109,73 @@ Summary of source research from October 2026, for D37.
 | matrix-nio | On | HTTP layer, every request | 429, and timeouts | `retry_after_ms`, otherwise 5 seconds | Unlimited by default (`max_limit_exceeded`, `max_timeouts`) |
 | mautrix-python | Off (`default_retry_count = 0`) | HTTP layer | When enabled: 502, 503, 504 and connection errors; never 429 | 4 seconds, doubling | The configured count |
 | Trixnity | On | HTTP layer (Ktor `HttpRequestRetry`), every request | 429 only | The larger of exponential backoff up to 30 seconds with jitter, and the `Retry-After` header; `retry_after_ms` is not read | 3 retries |
+
+## Appendix: research on waiting and retries
+
+The sources behind D37 and D38, read in October 2026, with what each says that matters here
+and what the design takes from it.
+
+**Jakob Nielsen, [Response Times: The 3 Important Limits](https://www.nngroup.com/articles/response-times-3-important-limits/)
+(Nielsen Norman Group, 1993).**
+
+- 0.1 seconds feels instantaneous; 1 second keeps the user's flow of thought unbroken, though
+  the delay is noticed; 10 seconds is the limit of keeping attention on the task.
+- Waits of 2 to 10 seconds need light feedback, such as a busy indicator. Longer waits need
+  a progress indicator and a way to interrupt. When the length is unknown, say what is
+  happening rather than show a made-up percentage.
+- **Taken:** a threshold of a few seconds for reporting; a report says what the call waits
+  for, with its length when known (`ExpectedWait`) and nothing made up when not; every call
+  can be cancelled (D38).
+
+**Fiona Fui-Hoon Nah, [A study on tolerable waiting time: how long are Web users willing to
+wait?](https://doi.org/10.1080/01449290410001669914) (Behaviour & Information Technology,
+2004).**
+
+- Users tolerated about two seconds waiting for a page without feedback. Feedback lengthened
+  the time they were willing to wait.
+- **Taken:** three seconds as the default threshold, a little above two so a report does not
+  flash past unread; and reporting long waits instead of cutting them short (D38).
+
+**Microsoft, [Transient fault handling](https://learn.microsoft.com/en-us/azure/architecture/best-practices/transient-faults)
+(Azure Architecture Center).**
+
+- Retry only faults that can pass, such as 429 and 5xx, not most 4xx.
+- For an operation the user is waiting on, use short intervals and few retries; keep
+  exponential backoff for background work. Choose them so that the total of timeouts and
+  delays, not each one, meets the latency the operation needs.
+- Honour `Retry-After`; it takes precedence over the client's own backoff. Add jitter.
+- Retry in one layer only: three retries in each of two layers is nine. Never retry
+  endlessly; add a retry budget across requests.
+- **Taken:** the threshold covers the whole call (D38); `Retry-After` first (D33, D37). The
+  transport retries only 429, not 5xx, since after a 5xx the request may have been carried out
+  (D37).
+
+**Marc Brooker, [Timeouts, retries and backoff with jitter](https://aws.amazon.com/builders-library/timeouts-retries-and-backoff-with-jitter/)
+(Amazon Builders' Library).**
+
+- Set a timeout on every remote call. Retries are selfish: they add load when the server is
+  already struggling.
+- Back off exponentially with a cap, and add jitter so clients do not retry in step.
+- Retry at a single point in the stack: five layers retrying three times each multiply load
+  by 243. Token buckets can limit retries across requests.
+- **Taken:** a timeout on every request and a cap on the rate-limit wait (D37).
+
+**Google, [Handling Overload](https://sre.google/sre-book/handling-overload/) (Site Reliability
+Engineering, chapter 21).**
+
+- At most three attempts per request; after that the failure goes to the caller.
+- A per-client retry budget of 10% of requests keeps retries to about 1.1 times the
+  original load.
+- Only the layer directly above a failing one retries; servers can answer "overloaded; don't
+  retry".
+- **Taken:** three retries per request before the error reaches the app (D37).
+
+**Jeffrey Dean and Luiz André Barroso, [The tail at scale](https://doi.org/10.1145/2408776.2408794)
+(Communications of the ACM, 2013).**
+
+- In large services, rare slow responses decide how fast requests feel; techniques such as
+  sending a request twice and taking the first answer cut that tail.
+- Those techniques suit servers and idempotent reads. Sending a request twice would only add
+  load to a homeserver that rate-limits, and is unsafe for requests that change something.
+- **Taken:** slow responses are normal, not exceptional, so waiting for one is reported like
+  any other wait and can be cancelled (D38).

@@ -23,7 +23,7 @@ public class RefreshIntegrationTests
             Identifier = new UserIdentifier { User = settings.User! },
             Password = settings.Password,
             InitialDeviceDisplayName = "matrix.NET refresh test"
-        }, Ct)).Session;
+        }, cancellationToken: Ct)).Session;
         Assert.NotNull(session.RefreshToken);
         var expiresAt = Assert.NotNull(session.ExpiresAt);
         Assert.InRange(expiresAt - DateTimeOffset.UtcNow, TimeSpan.Zero, TimeSpan.FromSeconds(30));
@@ -37,7 +37,7 @@ public class RefreshIntegrationTests
         client.SessionChanged += (_, e) => changes.Add(e.Kind);
 
         await Task.Delay(expiresAt - DateTimeOffset.UtcNow + TimeSpan.FromSeconds(1), Ct);
-        var response = await client.WhoAmIAsync(Ct);
+        var response = await client.WhoAmIAsync(cancellationToken: Ct);
 
         Assert.Equal(session.UserId, response.UserId);
         Assert.Equal(session.DeviceId, response.DeviceId);
@@ -47,7 +47,7 @@ public class RefreshIntegrationTests
         Assert.NotEqual(session.RefreshToken, refreshed.RefreshToken);
         Assert.Equal([SessionChangeKind.TokensRefreshed], changes);
 
-        await client.LogoutAsync(Ct);
+        await client.LogoutAsync(cancellationToken: Ct);
     }
 
     // The spec's soft logout recovery: the session ended, but its device and local data may be kept,
@@ -68,7 +68,7 @@ public class RefreshIntegrationTests
             InitialDeviceDisplayName = "matrix.NET soft logout test"
         };
 
-        var session = (await server.LoginAsync(Login(null), Ct)).Session;
+        var session = (await server.LoginAsync(Login(null), cancellationToken: Ct)).Session;
         var expiresAt = Assert.NotNull(session.ExpiresAt);
         // Without refresh, the expired token ends the session as a soft logout
         var client = new MatrixClient(session, new ClientOptions { AutoRefreshToken = false });
@@ -76,7 +76,7 @@ public class RefreshIntegrationTests
         client.SessionChanged += (_, e) => changes.Add(e);
 
         await Task.Delay(expiresAt - DateTimeOffset.UtcNow + TimeSpan.FromSeconds(1), Ct);
-        var rejection = await Assert.ThrowsAsync<MatrixUnknownTokenException>(() => client.WhoAmIAsync(Ct));
+        var rejection = await Assert.ThrowsAsync<MatrixUnknownTokenException>(() => client.WhoAmIAsync(cancellationToken: Ct));
 
         Assert.True(rejection.SoftLogout);
         Assert.Equal(MatrixClientState.Invalidated, client.State);
@@ -84,13 +84,13 @@ public class RefreshIntegrationTests
         Assert.Equal(SessionChangeKind.Invalidated, change.Kind);
         Assert.True(change.SoftLogout);
 
-        var again = (await server.LoginAsync(Login(client.DeviceId), Ct)).Session;
+        var again = (await server.LoginAsync(Login(client.DeviceId), cancellationToken: Ct)).Session;
         var resumed = new MatrixClient(again, new ClientOptions { AutoRefreshToken = false });
 
         Assert.Equal(session.DeviceId, again.DeviceId);
-        Assert.Equal(session.DeviceId, (await resumed.WhoAmIAsync(Ct)).DeviceId);
+        Assert.Equal(session.DeviceId, (await resumed.WhoAmIAsync(cancellationToken: Ct)).DeviceId);
 
-        await resumed.LogoutAsync(Ct);
+        await resumed.LogoutAsync(cancellationToken: Ct);
     }
 
     private sealed class SavingHandler(List<MatrixSession> saved) : ISessionRefreshHandler

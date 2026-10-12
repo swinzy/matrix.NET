@@ -9,7 +9,7 @@ internal sealed class VersionsCache
     /// <summary>The default for <see cref="ServerOptions.VersionsCacheLifetime"/> and <see cref="ClientOptions.VersionsCacheLifetime"/>.</summary>
     internal static readonly TimeSpan DefaultLifetime = TimeSpan.FromDays(1);
 
-    private readonly Func<CancellationToken, Task<VersionsResponse>> _fetch;
+    private readonly Func<WaitReporter?, CancellationToken, Task<VersionsResponse>> _fetch;
     private readonly TimeSpan _lifetime;
     private readonly TimeProvider _time;
 
@@ -17,7 +17,7 @@ internal sealed class VersionsCache
     private readonly SemaphoreSlim _lock = new(1, 1);
     private volatile Entry? _entry;
 
-    public VersionsCache(Func<CancellationToken, Task<VersionsResponse>> fetch, TimeSpan lifetime, TimeProvider time)
+    public VersionsCache(Func<WaitReporter?, CancellationToken, Task<VersionsResponse>> fetch, TimeSpan lifetime, TimeProvider time)
     {
         _fetch = fetch;
         _lifetime = lifetime;
@@ -31,16 +31,16 @@ internal sealed class VersionsCache
     public VersionsResponse? Cached => _entry?.Response;
 
     /// <summary>Returns the cached response, fetching it first if there is none or it has expired.</summary>
-    public async Task<VersionsResponse> GetAsync(CancellationToken cancellationToken)
+    public async Task<VersionsResponse> GetAsync(WaitReporter? waits, CancellationToken cancellationToken)
     {
         if (Fresh() is { } cached)
             return cached;
 
-        await _lock.WaitAsync(cancellationToken);
+        await WaitForLockAsync(waits, cancellationToken);
         try
         {
             // Another caller may have fetched it while this one waited
-            return Fresh() ?? await FetchAsync(cancellationToken);
+            return Fresh() ?? await FetchAsync(waits, cancellationToken);
         }
         finally
         {
@@ -49,12 +49,12 @@ internal sealed class VersionsCache
     }
 
     /// <summary>Fetches the response now, whatever the cache holds, and caches it.</summary>
-    public async Task<VersionsResponse> RefreshAsync(CancellationToken cancellationToken)
+    public async Task<VersionsResponse> RefreshAsync(WaitReporter? waits, CancellationToken cancellationToken)
     {
-        await _lock.WaitAsync(cancellationToken);
+        await WaitForLockAsync(waits, cancellationToken);
         try
         {
-            return await FetchAsync(cancellationToken);
+            return await FetchAsync(waits, cancellationToken);
         }
         finally
         {
@@ -71,11 +71,21 @@ internal sealed class VersionsCache
     }
 
     // A failure leaves the cache as it was, so the next call tries again
-    private async Task<VersionsResponse> FetchAsync(CancellationToken cancellationToken)
+    private async Task<VersionsResponse> FetchAsync(WaitReporter? waits, CancellationToken cancellationToken)
     {
-        var response = await _fetch(cancellationToken);
+        var response = await _fetch(waits, cancellationToken);
         _entry = new Entry(response, _time.GetUtcNow());
         return response;
+    }
+
+    // Waiting for another caller's request is waiting for a response too, though not this call's own
+    private async Task WaitForLockAsync(WaitReporter? waits, CancellationToken cancellationToken)
+    {
+        if (_lock.Wait(0, CancellationToken.None))
+            return;
+
+        using (waits?.AwaitResponse(mayTakeEffect: false))
+            await _lock.WaitAsync(cancellationToken);
     }
 
     private VersionsResponse? Fresh()
