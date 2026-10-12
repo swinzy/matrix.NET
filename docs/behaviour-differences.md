@@ -27,6 +27,7 @@ the feature.
 - [Feature detection uses version ranges](#feature-detection-uses-version-ranges)
 - [Rate-limited requests are retried a few times, for short waits only](#rate-limited-requests-are-retried-a-few-times-for-short-waits-only)
 - [Waits longer than three seconds are reported to the app](#waits-longer-than-three-seconds-are-reported-to-the-app)
+- [The initial sync is waited for up to ten minutes, with its own state](#the-initial-sync-is-waited-for-up-to-ten-minutes-with-its-own-state)
 
 ## Server discovery looks up the hostname without the port
 
@@ -146,9 +147,11 @@ The spec says to wait, and how long through `Retry-After`, but leaves whether a 
 an app does the waiting open.
 
 **matrix.NET:** every request refused with 429 or `M_LIMIT_EXCEEDED` is retried up to 3
-times, waiting as the homeserver asks, or 1, 2 and 4 seconds. If it asks for longer than one
-minute, the error is thrown at once with `RetryAfter`. Other errors are not retried. Both
-limits are options, and retrying can be turned off (D37).
+times, waiting as the homeserver asks, or about 1, 2 and 4 seconds with jitter. If it asks for
+longer than one minute, the error is thrown at once with `RetryAfter`. A call that cannot
+report its waits to the app (see the next entry) waits for at most ten seconds in total.
+Other errors are not retried, and the sync loop's requests are retried by the loop alone.
+The limits are options, and retrying can be turned off (D37).
 
 **Other SDKs:**
 
@@ -166,12 +169,14 @@ limits are options, and retrying can be turned off (D37).
   succeeds whenever it eventually can, and the app never handles a rate limit itself.
 - Not retrying in the HTTP layer, as matrix-js-sdk and mautrix-python do, keeps every call's
   duration predictable and leaves all timing to the app.
-- matrix.NET takes short waits itself and leaves long ones to the app: a call waits for at
-  most about three minutes with the defaults, and a five-minute login limit, as Synapse sets
-  after repeated failed logins, reaches the app at once. Any wait that takes a call past
-  three seconds is reported to the app as it starts (see the next entry).
+- matrix.NET takes short waits itself and leaves long ones to the app. A call the app hears
+  about waits for at most about three minutes with the defaults, and any wait that takes it
+  past three seconds is reported as it starts (see the next entry). A call the app does not
+  hear about waits for at most ten seconds. A five-minute login limit, as Synapse sets after
+  repeated failed logins, reaches the app at once either way.
 - An app that prefers either of the other behaviours can set `MaxRateLimitRetries` to 0 and
-  retry itself, or raise `MaxRateLimitRetries` and `MaxRateLimitWait`.
+  retry itself, or raise `MaxRateLimitRetries`, `MaxRateLimitWait` and
+  `MaxUnreportedRateLimitWait`.
 
 ## Waits longer than three seconds are reported to the app
 
@@ -203,3 +208,33 @@ threshold is an option (D38).
   the `CancellationToken`, so a token passed by position must be named.
 - An app that does not want reports passes no `IProgress`, or sets `WaitReportThreshold` to
   `Timeout.InfiniteTimeSpan`.
+
+## The initial sync is waited for up to ten minutes, with its own state
+
+**Spec:** says nothing about client-side timeouts. An initial sync asks for no long poll
+(`timeout=0`), so the homeserver answers once it has built the response, however long that
+takes; this is a library's own choice.
+
+**matrix.NET:** `SyncLoop` waits up to ten minutes for the initial sync
+(`InitialSyncTimeout`, which can be infinite) and is in the `InitialSyncing` state meanwhile,
+entered again each time a failed initial sync is retried. Retries send the same parameters
+(D34).
+
+**Other SDKs:**
+
+| SDK | Local timeout of the initial sync | State the app can show | Where |
+|---|---|---|---|
+| matrix-rust-sdk | 60 seconds: the 30-second request timeout plus the long-poll timeout | None in the sync loop; the room list service has its own | `client/mod.rs` (`sync_once`), `http_client/mod.rs` |
+| matrix-js-sdk | 80 seconds (`BUFFER_PERIOD_MS`) | None until the first sync is done (`Prepared`) | `sync.ts` |
+| matrix-nio | Probably none: a timeout of 0 is passed to aiohttp | None | `client/async_client.py` (`sync`) |
+| mautrix-python | 5 minutes, aiohttp's default | `SYNC_STARTED` when the loop starts | `api.py`, `client/syncer.py` |
+| Trixnity | 5 minutes | `INITIAL_SYNC` | `SyncApiClient.kt` |
+
+**Trade-off:**
+
+- A shorter timeout ends a request whose connection dropped without notice sooner, and keeps
+  the loop's behaviour the same for every request.
+- matrix.NET gives the homeserver longer, since giving up does not stop the homeserver's work,
+  and shows the wait as its own state rather than as ordinary syncing.
+- An app that prefers a shorter limit sets `InitialSyncTimeout`; one that lets the user cancel
+  can set it to `Timeout.InfiniteTimeSpan`.

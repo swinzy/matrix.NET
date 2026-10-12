@@ -1,5 +1,6 @@
 using System.Net;
 using System.Runtime.CompilerServices;
+using TeamBanana.MatrixDotNet.Transport;
 
 namespace TeamBanana.MatrixDotNet;
 
@@ -27,6 +28,7 @@ namespace TeamBanana.MatrixDotNet;
 public sealed class SyncLoop
 {
     internal static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(30);
+    internal static readonly TimeSpan DefaultInitialSyncTimeout = TimeSpan.FromMinutes(10);
     internal static readonly TimeSpan FirstRetryDelay = TimeSpan.FromSeconds(1);
     internal static readonly TimeSpan MaxRetryDelay = TimeSpan.FromMinutes(1);
 
@@ -36,13 +38,18 @@ public sealed class SyncLoop
 
     /// <param name="client">The client to sync with.</param>
     /// <param name="options">Where to start and how to sync; defaults when omitted.</param>
-    /// <exception cref="ArgumentOutOfRangeException">The timeout is negative.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// The timeout is negative, or the initial sync timeout is neither positive nor infinite.
+    /// </exception>
     public SyncLoop(MatrixClient client, SyncLoopOptions? options = null)
     {
         ArgumentNullException.ThrowIfNull(client);
         options ??= new SyncLoopOptions();
         if (options.Timeout < TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(options), options.Timeout, "The sync timeout cannot be negative.");
+        if (options.InitialSyncTimeout <= TimeSpan.Zero && options.InitialSyncTimeout != Timeout.InfiniteTimeSpan)
+            throw new ArgumentOutOfRangeException(nameof(options), options.InitialSyncTimeout,
+                "The initial sync timeout must be positive, or Timeout.InfiniteTimeSpan.");
 
         Client = client;
         Options = options;
@@ -81,17 +88,24 @@ public sealed class SyncLoop
     // Replaced by tests, so retries do not really wait
     internal Func<TimeSpan, CancellationToken, Task> Delay { get; init; } = Task.Delay;
 
+    // Replaced by tests, so the backoff's jitter is predictable
+    internal Func<double> Random { get; init; } = Backoff.SharedRandom;
+
     /// <summary>
     /// Syncs until cancelled or until an error that retrying cannot fix, handing each response to the
-    /// app. Starting from no <see cref="Since"/>, the first request is an initial sync that answers at
-    /// once; every later one long-polls for <see cref="SyncLoopOptions.Timeout"/>.
+    /// app. Starting from no <see cref="Since"/>, the first request is an initial sync, which answers
+    /// once the homeserver has built it and may take minutes for a large account: the loop is
+    /// <see cref="SyncLoopState.InitialSyncing"/> meanwhile, and waits up to
+    /// <see cref="SyncLoopOptions.InitialSyncTimeout"/>. Every later request long-polls for
+    /// <see cref="SyncLoopOptions.Timeout"/>.
     /// </summary>
     /// <remarks>
     /// <para>
     /// Network failures, local timeouts, 5xx responses, rate limits (429) and a locked account are
-    /// retried indefinitely. The loop waits 1 second after the first failure, doubling up to 1 minute,
-    /// or as long as the homeserver asks (<see cref="MatrixException.RetryAfter"/>). Each failure is
-    /// reported through <see cref="StateChanged"/>.
+    /// retried indefinitely. The loop waits about 1 second after the first failure, doubling up to about
+    /// 1 minute, with jitter so clients do not all reconnect at once; or as long as the homeserver asks
+    /// (<see cref="MatrixException.RetryAfter"/>), however long that is. Each failure is reported through
+    /// <see cref="StateChanged"/>. The loop is the only layer that retries its requests (D34).
     /// </para>
     /// <para>
     /// Anything else ends the enumeration by throwing, e.g. <see cref="MatrixUnknownTokenException"/>
@@ -110,31 +124,38 @@ public sealed class SyncLoop
 
         try
         {
-            ChangeState(new SyncLoopStateChangedEventArgs(SyncLoopState.Syncing));
             var failures = 0;
             for (;;)
             {
+                var since = _since;
+                // A retried initial sync may take minutes again, so the app is told each time it starts
+                if (since is null)
+                    ChangeState(new SyncLoopStateChangedEventArgs(SyncLoopState.InitialSyncing));
+                else if (failures == 0)
+                    ChangeState(new SyncLoopStateChangedEventArgs(SyncLoopState.Syncing));
+
                 SyncResponse response;
                 try
                 {
-                    var since = _since;
-                    response = await Client.SyncAsync(new SyncRequest
+                    // The same parameters on every retry, so a homeserver that caches the response, as
+                    // Synapse does, can answer a retried initial sync from the work already done
+                    response = await Client.SyncCoreAsync(new SyncRequest
                     {
                         Since = since,
                         Timeout = since is null ? TimeSpan.Zero : Options.Timeout,
                         Filter = Options.Filter
-                    }, cancellationToken);
+                    }, retryRateLimited: false, since is null ? Options.InitialSyncTimeout : null, cancellationToken);
                 }
                 catch (Exception e) when (IsTransient(e, cancellationToken))
                 {
                     failures++;
-                    var delay = GetRetryDelay(e, failures);
+                    var delay = GetRetryDelay(e, failures, Random());
                     ChangeState(new SyncLoopStateChangedEventArgs(SyncLoopState.Retrying, e, failures, delay));
                     await Delay(delay, cancellationToken);
                     continue;
                 }
 
-                if (failures > 0)
+                if (failures > 0 || since is null)
                 {
                     failures = 0;
                     ChangeState(new SyncLoopStateChangedEventArgs(SyncLoopState.Syncing));
@@ -168,15 +189,10 @@ public sealed class SyncLoop
         _ => false
     };
 
-    internal static TimeSpan GetRetryDelay(Exception error, int failures)
-    {
-        if (error is MatrixException { RetryAfter: { } retryAfter })
-            return retryAfter;
-
-        // Capping the exponent keeps the arithmetic finite however long the failures go on
-        var backoff = FirstRetryDelay * Math.Pow(2, Math.Min(failures - 1, 16));
-        return backoff < MaxRetryDelay ? backoff : MaxRetryDelay;
-    }
+    internal static TimeSpan GetRetryDelay(Exception error, int failures, double random) =>
+        error is MatrixException { RetryAfter: { } retryAfter }
+            ? retryAfter
+            : Backoff.Next(FirstRetryDelay, failures - 1, MaxRetryDelay, random);
 
     private void ChangeState(SyncLoopStateChangedEventArgs change)
     {

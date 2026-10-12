@@ -72,10 +72,10 @@ internal sealed class MatrixTransport
     public Uri Homeserver { get; }
 
     /// <summary>
-    /// Starts timing a public call that reports its waits to <paramref name="progress"/> (D38), or returns
-    /// <see langword="null"/> if it has none. Pass the result to every request the call sends.
+    /// Starts a public call, which reports its waits to <paramref name="progress"/> if there is one (D38).
+    /// Pass the result to every request the call sends.
     /// </summary>
-    public WaitReporter? StartCall(IProgress<RequestWait>? progress) =>
+    public WaitReporter StartCall(IProgress<RequestWait>? progress) =>
         WaitReporter.Start(progress, _waitReportThreshold, _time);
 
     /// <summary>
@@ -83,39 +83,42 @@ internal sealed class MatrixTransport
     /// limiting (D37). <paramref name="timeout"/> applies to each attempt, overrides
     /// <see cref="DefaultTimeout"/>, and <see cref="Timeout.InfiniteTimeSpan"/> disables it. A timeout
     /// throws <see cref="TaskCanceledException"/> with an inner <see cref="TimeoutException"/>.
-    /// <paramref name="waits"/>, from <see cref="StartCall"/>, is told about the waits (D38).
+    /// <paramref name="waits"/>, from <see cref="StartCall"/>, is told about the waits (D38); without it,
+    /// the request is a call of its own that reports nothing. <paramref name="retryRateLimited"/> turns the
+    /// retrying off for callers that retry themselves, so waits are not taken in two layers (D34).
     /// </summary>
     public Task<TResponse> SendAsync<TResponse>(Endpoint endpoint, CancellationToken cancellationToken = default,
-        TimeSpan? timeout = null, WaitReporter? waits = null) =>
-        SendCoreAsync<TResponse>(endpoint, null, null, timeout, waits, cancellationToken);
+        TimeSpan? timeout = null, WaitReporter? waits = null, bool retryRateLimited = true) =>
+        SendCoreAsync<TResponse>(endpoint, null, null, timeout, waits, retryRateLimited, cancellationToken);
 
     /// <inheritdoc cref="SendAsync{TResponse}"/>
     public Task<TResponse> SendAsync<TRequest, TResponse>(Endpoint endpoint, TRequest body,
         CancellationToken cancellationToken = default, TimeSpan? timeout = null, WaitReporter? waits = null) =>
-        SendCoreAsync<TResponse>(endpoint, body, typeof(TRequest), timeout, waits, cancellationToken);
+        SendCoreAsync<TResponse>(endpoint, body, typeof(TRequest), timeout, waits, true, cancellationToken);
 
     private async Task<TResponse> SendCoreAsync<TResponse>(Endpoint endpoint, object? body, Type? bodyType,
-        TimeSpan? timeout, WaitReporter? waits, CancellationToken cancellationToken)
+        TimeSpan? timeout, WaitReporter? waits, bool retryRateLimited, CancellationToken cancellationToken)
     {
+        waits ??= StartCall(null);
         for (var retries = 0;; retries++)
         {
             try
             {
                 return await SendOnceAsync<TResponse>(endpoint, body, bodyType, timeout, waits, cancellationToken);
             }
-            catch (MatrixException e) when (_rateLimitRetry.GetWait(e, retries) is { } wait)
+            catch (MatrixException e) when (retryRateLimited && _rateLimitRetry.GetWait(e, retries, waits) is { } wait)
             {
-                waits?.RateLimited(wait);
+                waits.RateLimited(wait);
                 await _rateLimitRetry.Delay(wait, cancellationToken);
             }
         }
     }
 
     private async Task<TResponse> SendOnceAsync<TResponse>(Endpoint endpoint, object? body, Type? bodyType,
-        TimeSpan? timeout, WaitReporter? waits, CancellationToken cancellationToken)
+        TimeSpan? timeout, WaitReporter waits, CancellationToken cancellationToken)
     {
         // Only a request that does more than read can leave a cancelled call's outcome unknown
-        using var awaiting = waits?.AwaitResponse(mayTakeEffect: endpoint.Method != HttpMethod.Get);
+        using var awaiting = waits.AwaitResponse(mayTakeEffect: endpoint.Method != HttpMethod.Get);
         var effectiveTimeout = timeout ?? DefaultTimeout;
         using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeoutSource.CancelAfter(effectiveTimeout);

@@ -103,7 +103,8 @@ public class MatrixClient : ISharedEndpoints
                 "ClientOptions.AutoRefreshToken to false to manage refresh in the app.", nameof(options));
 
         VersionsCache.ValidateLifetime(Options.VersionsCacheLifetime, nameof(options));
-        RateLimitRetry.Validate(Options.MaxRateLimitRetries, Options.MaxRateLimitWait, nameof(options));
+        RateLimitRetry.Validate(Options.MaxRateLimitRetries, Options.MaxRateLimitWait, Options.MaxUnreportedRateLimitWait,
+            nameof(options));
         WaitReporter.ValidateThreshold(Options.WaitReportThreshold, nameof(options));
 
         var automaticDecompression = Options.AutomaticDecompression;
@@ -206,10 +207,21 @@ public class MatrixClient : ISharedEndpoints
     /// Homeservers may answer a request identical to a recent one from a cache: Synapse keeps sync
     /// responses for two minutes by default. Repeating an initial sync with the same parameters may
     /// therefore return the earlier answer; continue from <see cref="SyncResponse.NextBatch"/> instead.
+    /// <para>
+    /// An initial sync, or one with <see cref="SyncRequest.FullState"/>, answers only once the homeserver
+    /// has built it, which can take minutes for a large account, so it times out locally after ten
+    /// minutes. Others time out 30 seconds after their long-poll <see cref="SyncRequest.Timeout"/>, and
+    /// never sooner than other requests. Use <see cref="SyncLoop"/> to choose the initial sync's limit.
+    /// </para>
     /// </remarks>
     /// <param name="request">Parameters; an initial sync that answers at once when omitted.</param>
     /// <param name="cancellationToken">Cancels the request.</param>
-    public Task<SyncResponse> SyncAsync(SyncRequest? request = null, CancellationToken cancellationToken = default)
+    public Task<SyncResponse> SyncAsync(SyncRequest? request = null, CancellationToken cancellationToken = default) =>
+        SyncCoreAsync(request, retryRateLimited: true, initialSyncTimeout: null, cancellationToken);
+
+    // The sync loop retries rate limits itself, reporting each wait, so the transport must not wait first (D34)
+    internal Task<SyncResponse> SyncCoreAsync(SyncRequest? request, bool retryRateLimited, TimeSpan? initialSyncTimeout,
+        CancellationToken cancellationToken)
     {
         request ??= new SyncRequest();
         if (request.Timeout < TimeSpan.Zero)
@@ -226,11 +238,23 @@ public class MatrixClient : ISharedEndpoints
             query.Add(("timeout", ((long)timeout.TotalMilliseconds).ToString(CultureInfo.InvariantCulture)));
         var endpoint = Endpoints.Sync.WithQuery(query);
 
-        // The homeserver may hold the request for the whole timeout, so the local timeout must be longer
-        var localTimeout = request.Timeout + SyncTimeoutMargin;
+        TimeSpan localTimeout;
+        if (request.Since is null || request.FullState)
+        {
+            // Answered once the homeserver has built it, which can take minutes for a large account
+            localTimeout = initialSyncTimeout ?? SyncLoop.DefaultInitialSyncTimeout;
+        }
+        else
+        {
+            // The homeserver may hold the request for the whole long poll, so the local timeout is longer
+            localTimeout = request.Timeout.GetValueOrDefault() + SyncTimeoutMargin;
+            if (localTimeout < MatrixTransport.DefaultTimeout)
+                localTimeout = MatrixTransport.DefaultTimeout;
+        }
         // Not reported as a wait: holding the request open is how a long poll works (D38)
-        return InvokeCoreAsync(endpoint, (ct, _) => _transport.SendAsync<SyncResponse>(endpoint, ct, localTimeout), null,
-            cancellationToken);
+        return InvokeCoreAsync(endpoint,
+            (ct, _) => _transport.SendAsync<SyncResponse>(endpoint, ct, localTimeout, retryRateLimited: retryRateLimited),
+            null, cancellationToken);
     }
 
     /// <summary>

@@ -44,13 +44,15 @@ public class RateLimitRetryTests
         public SequenceHandler Handler { get; } = new(responses);
         public List<TimeSpan> Waits { get; } = [];
 
-        public MatrixTransport Transport(int maxRetries = 3, TimeSpan? maxWait = null) =>
+        // Unlimited unreported waits unless asked, so each test checks one limit; the jitter is at its maximum
+        public MatrixTransport Transport(int maxRetries = 3, TimeSpan? maxWait = null, TimeSpan? maxUnreportedWait = null,
+            double random = 1) =>
             new(Homeserver, () => new HttpClient(Handler), rateLimitRetry: new RateLimitRetry(maxRetries,
-                maxWait ?? TimeSpan.FromMinutes(1), (wait, _) =>
+                maxWait ?? TimeSpan.FromMinutes(1), maxUnreportedWait ?? TimeSpan.MaxValue, (wait, _) =>
                 {
                     Waits.Add(wait);
                     return Task.CompletedTask;
-                }));
+                }, () => random));
     }
 
     [Fact]
@@ -101,6 +103,85 @@ public class RateLimitRetryTests
         Assert.Equal(TimeSpan.FromSeconds(334), exception.RetryAfter);
         Assert.Empty(harness.Waits);
         Assert.Equal(1, harness.Handler.Count);
+    }
+
+    [Theory]
+    [InlineData(0, new[] { 0.5, 1, 2 })]
+    [InlineData(0.5, new[] { 0.75, 1.5, 3 })]
+    public async Task SendAsync_SpreadsItsOwnBackoffWithJitter(double random, double[] seconds)
+    {
+        // Never below half, so a client never retries at once, and never above the backoff itself
+        var harness = new Harness(Limited(), Limited(), Limited(), Ok());
+
+        await harness.Transport(random: random).SendAsync<WhoAmIResponse>(WhoAmI, Ct);
+
+        Assert.Equal(seconds.Select(TimeSpan.FromSeconds), harness.Waits);
+    }
+
+    [Fact]
+    public async Task SendAsync_KeepsTheHomeserversWaitWithoutJitter()
+    {
+        var harness = new Harness(Limited(retryAfterHeader: "2"), Ok());
+
+        await harness.Transport(random: 0).SendAsync<WhoAmIResponse>(WhoAmI, Ct);
+
+        Assert.Equal([TimeSpan.FromSeconds(2)], harness.Waits);
+    }
+
+    // A call that cannot report its waits (D38) must not keep the user waiting unawares
+    [Fact]
+    public async Task SendAsync_KeepsUnreportedWaitsShortInTotal()
+    {
+        var harness = new Harness(Limited("4"), Limited("4"), Limited("4"), Ok());
+
+        var exception = await Assert.ThrowsAsync<MatrixException>(() =>
+            harness.Transport(maxUnreportedWait: TimeSpan.FromSeconds(10)).SendAsync<WhoAmIResponse>(WhoAmI, Ct));
+
+        Assert.Equal([TimeSpan.FromSeconds(4), TimeSpan.FromSeconds(4)], harness.Waits);
+        Assert.Equal(TimeSpan.FromSeconds(4), exception.RetryAfter);
+    }
+
+    [Fact]
+    public async Task SendAsync_LeavesAnUnreportedWaitPastTheLimitToTheApp()
+    {
+        var harness = new Harness(Limited("15"), Ok());
+
+        var exception = await Assert.ThrowsAsync<MatrixException>(() =>
+            harness.Transport(maxUnreportedWait: TimeSpan.FromSeconds(10)).SendAsync<WhoAmIResponse>(WhoAmI, Ct));
+
+        Assert.Empty(harness.Waits);
+        Assert.Equal(TimeSpan.FromSeconds(15), exception.RetryAfter);
+    }
+
+    [Fact]
+    public async Task ReportedCalls_WaitUpToTheLongerLimit()
+    {
+        var handler = new SequenceHandler([Limited("30"), Ok()]);
+        var waits = new List<TimeSpan>();
+        var client = new MatrixClient(Session, new HttpClient(handler), new ClientOptions
+        {
+            RateLimitDelay = (wait, _) =>
+            {
+                waits.Add(wait);
+                return Task.CompletedTask;
+            }
+        });
+
+        await client.WhoAmIAsync(new Progress<RequestWait>(), Ct);
+
+        Assert.Equal([TimeSpan.FromSeconds(30)], waits);
+    }
+
+    [Fact]
+    public async Task UnreportedCalls_ThrowWaitsPastTenSecondsByDefault()
+    {
+        var handler = new SequenceHandler([Limited("30"), Ok()]);
+        var client = new MatrixClient(Session, new HttpClient(handler));
+
+        var exception = await Assert.ThrowsAsync<MatrixException>(() => client.WhoAmIAsync(cancellationToken: Ct));
+
+        Assert.Equal(TimeSpan.FromSeconds(30), exception.RetryAfter);
+        Assert.Equal(1, handler.Count);
     }
 
     [Fact]
@@ -158,7 +239,7 @@ public class RateLimitRetryTests
         using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(Ct);
         var handler = new SequenceHandler([Limited("30"), Ok()]);
         var transport = new MatrixTransport(Homeserver, () => new HttpClient(handler),
-            rateLimitRetry: new RateLimitRetry(3, TimeSpan.FromMinutes(1), Task.Delay));
+            rateLimitRetry: new RateLimitRetry(3, TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(1), Task.Delay, () => 1));
 
         var send = transport.SendAsync<WhoAmIResponse>(WhoAmI, cancellation.Token);
         await cancellation.CancelAsync();
@@ -194,6 +275,8 @@ public class RateLimitRetryTests
             new MatrixServer(Homeserver, new ServerOptions { MaxRateLimitRetries = -1 }));
         Assert.Throws<ArgumentOutOfRangeException>(() =>
             new MatrixClient(Session, new ClientOptions { MaxRateLimitWait = TimeSpan.FromSeconds(-1) }));
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            new MatrixClient(Session, new ClientOptions { MaxUnreportedRateLimitWait = TimeSpan.FromSeconds(-1) }));
     }
 
     /// <summary>Answers each request with the next scripted response, counting them.</summary>

@@ -227,9 +227,10 @@ public class RequestWaitTests
     [Fact]
     public async Task InfiniteThreshold_ReportsNothing()
     {
+        // Within the ten seconds an unreported call may wait (D37), so the wait is still taken
         var time = new ManualTime();
         var progress = new Recorder();
-        var handler = new ScriptHandler(_ => Limited(30_000), _ => Ok());
+        var handler = new ScriptHandler(_ => Limited(5000), _ => Ok());
 
         await Client(handler, time, Timeout.InfiniteTimeSpan)
             .SendMessageAsync("!room:example.org", new TextMessageContent("hi"), progress: progress,

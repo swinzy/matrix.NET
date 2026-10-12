@@ -8,7 +8,18 @@ public enum SyncLoopState
     /// <summary>The loop is not running: it has not been started, or it has ended.</summary>
     Stopped,
 
-    /// <summary>The loop is running, and its last request succeeded or it has just started.</summary>
+    /// <summary>
+    /// The loop is waiting for the initial sync, which has no <see cref="SyncLoop.Since"/> and returns
+    /// everything the account can see. It may take minutes for a large account, and the homeserver
+    /// gives no progress, so this is the state to tell the user about. Also entered again when the
+    /// initial sync is tried again after <see cref="Retrying"/>.
+    /// </summary>
+    InitialSyncing,
+
+    /// <summary>
+    /// The loop is running, and its last request succeeded or it has just started from a saved
+    /// <see cref="SyncLoop.Since"/>.
+    /// </summary>
     Syncing,
 
     /// <summary>

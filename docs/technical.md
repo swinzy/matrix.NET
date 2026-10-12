@@ -59,9 +59,9 @@ and is not part of the repository.
 | Type | Role |
 |---|---|
 | `MatrixServer` | Unauthenticated endpoints of a homeserver: supported login types, login and the shared endpoints; static `DiscoverAsync` (D36) |
-| `ServerOptions` | Options for `MatrixServer`: automatic decompression (D25), `/versions` cache lifetime (D25), rate-limit retries (D37), wait report threshold (D38) |
+| `ServerOptions` | Options for `MatrixServer`: automatic decompression (D25), `/versions` cache lifetime (D25), rate-limit retries and their limits (D37), wait report threshold (D38) |
 | `MatrixClient` | Authenticated endpoints through a `MatrixSession`: `WhoAmIAsync`, `LogoutAsync`, `SyncAsync`, `GetJoinedRoomsAsync`, `CreateRoomAsync`, `JoinRoomAsync`, `LeaveRoomAsync`, `SendMessageAsync`, `SendEventAsync`, `RedactEventAsync` and the shared endpoints so far; lifecycle `State` and `SessionChanged` (D14, D21); automatic token refresh (D12) |
-| `ClientOptions` | Options for `MatrixClient`: automatic token refresh, refresh handler, automatic decompression, `/versions` cache lifetime (D25), rate-limit retries (D37), wait report threshold (D38) |
+| `ClientOptions` | Options for `MatrixClient`: automatic token refresh, refresh handler, automatic decompression, `/versions` cache lifetime (D25), rate-limit retries and their limits (D37), wait report threshold (D38) |
 | `ISessionRefreshHandler` / `DiscardingSessionRefreshHandler` | Saves refreshed sessions before their tokens are used; the discarding one saves nothing (D23) |
 | `WhoAmIResponse` | Response of `GET /account/whoami` |
 | `LoginRequest` | Body of `POST /login` |
@@ -75,7 +75,8 @@ and is not part of the repository.
 | `VersionsResponse` | Response of `GET /versions`, read-only as it is cached: supported spec versions and unstable features, `MeetsMinimumVersion` (D24) and `Supports(feature)` (D26) |
 | `Transport.RateLimitRetry` (internal) | Whether and how long to wait before retrying a rate-limited request (D37) |
 | `RequestWait` / `RequestWaitReason` | A wait past the threshold, reported through a call's `IProgress<RequestWait>` (D38) |
-| `Transport.WaitReporter` (internal) | Times one public call across its requests and reports its waits (D38) |
+| `Transport.WaitReporter` (internal) | One public call across its requests: reports its waits, and adds up unreported rate-limit waits (D37, D38) |
+| `Transport.Backoff` (internal) | Exponential backoff with jitter, for the waits the library chooses itself (D34, D37) |
 | `Transport.VersionsCache` (internal) | One instance's cached `/versions`, with its lifetime (D25) |
 | `IIdentifier` / `UserIdentifier` | User identifier objects (`m.id.user`) |
 | `MatrixException` | A Matrix error response (`errcode`, `error` as `ServerMessage`) or a non-Matrix HTTP failure; `RetryAfter` when the homeserver asks for a wait (D33) |
@@ -99,7 +100,7 @@ and is not part of the repository.
 | `RoomEvent` and subclasses | Timeline events: `MessageEvent`, `EncryptedEvent`, `RedactionEvent`, `RedactedRoomEvent`, `UnknownRoomEvent`, `InvalidRoomEvent` (D32) |
 | `CreateRoomRequest` / `InitialStateEvent` | Parameters of `CreateRoomAsync`; `RoomPresets` and `RoomVisibilities` hold the spec's values (D35) |
 | `SyncLoop` / `SyncLoopOptions` | Syncs continuously as an `IAsyncEnumerable<SyncResponse>`, retrying errors that may go away (D34) |
-| `SyncLoopState` / `SyncLoopStateChangedEventArgs` | `Stopped`, `Syncing` or `Retrying`, and the data of `SyncLoop.StateChanged` (D34) |
+| `SyncLoopState` / `SyncLoopStateChangedEventArgs` | `Stopped`, `InitialSyncing`, `Syncing` or `Retrying`, and the data of `SyncLoop.StateChanged` (D34) |
 | `Transport.RoomEventConverter` (internal) | Reads and writes `RoomEvent` by `type` without losing data (D32) |
 | `Transport.ReflectionJson` (internal) | Reflection-based options for app content, used only by the overloads marked as needing it (D29) |
 | `MatrixFeature` | The features added after the minimum version, with the versions that added and removed them (D26) |
@@ -451,15 +452,21 @@ again, for every endpoint, before throwing:
 
 - **What counts:** status 429, or the error code `M_LIMIT_EXCEEDED` with any status, since a
   proxy may answer 429 without a Matrix body.
-- **How long:** as the homeserver asks (`RetryAfter`, D33), or 1, 2 and 4 seconds when it does
-  not say.
+- **How long:** as the homeserver asks (`RetryAfter`, D33), unchanged; or, when it does not
+  say, about 1, 2 and 4 seconds, each spread at random over the upper half of the value (0.5 to
+  1, 1 to 2, 2 to 4 seconds) so clients refused together do not retry together.
 - **Up to 3 retries** (`MaxRateLimitRetries`). The last refusal is then thrown with its
   `RetryAfter`.
 - **Only for short waits:** if the homeserver asks for longer than `MaxRateLimitWait`, one
   minute by default, the exception is thrown at once, so the app decides whether to wait.
+- **Shorter still when the app cannot be told.** A call whose waits are not reported (D38),
+  because the app passed no `IProgress` or turned reporting off, waits out rate limits for at
+  most `MaxUnreportedRateLimitWait` in total, ten seconds by default. A wait that would go past
+  it is not taken; the exception is thrown at once with its `RetryAfter`.
 - **Nothing else is retried:** 5xx responses and network failures still throw at once. The
-  sync loop retries those itself (D34).
-- Both settings are on `ClientOptions` and `ServerOptions`; `MaxRateLimitRetries = 0` turns
+  sync loop retries those itself, and its requests skip these retries so it can retry rate
+  limits itself too, in one layer (D34).
+- All three settings are on `ClientOptions` and `ServerOptions`; `MaxRateLimitRetries = 0` turns
   retrying off. The wait honours the caller's `CancellationToken`, and the request timeout
   applies to each attempt rather than the whole call.
 
@@ -483,7 +490,15 @@ Checked against Synapse with its default limits:
   error and the wait, and can tell the user. Waits below it that take a call past three
   seconds are reported to the app as they start (D38).
 - **Bounded by count as well as length,** so a homeserver that keeps refusing cannot hold a
-  call indefinitely: at most about 3 minutes with the defaults.
+  call indefinitely: at most about 3 minutes with the defaults, and only while the app is told.
+- **Ten seconds without reporting:** Nielsen puts ten seconds as the limit of keeping the
+  user's attention, beyond which a wait needs feedback and a way to interrupt. A call that
+  cannot report has neither, so the library does not wait past it unasked. A reported call
+  has both, so it may wait up to the longer limit. The limit is on the total, because the user
+  waits for the call, not for each wait in it (Microsoft).
+- **Jitter only on the library's own backoff:** the homeserver's wait says how long it needs,
+  and waiting longer than asked only delays the user. See the
+  [research appendix](#appendix-research-on-waiting-and-retries).
 - **The defaults** follow Trixnity's 3 retries, and a one-minute cap close to matrix-rust-sdk's
   maximum backoff (see the appendix and [behaviour-differences.md](behaviour-differences.md)).
 
@@ -533,7 +548,8 @@ sources)
   seconds is where the app should start saying something; a shorter wait would be gone
   before the user could read a message about it.
 - **Report, not give up.** Both studies find that users wait longer when told what is
-  happening. So the limits of D37 stay, and long waits become visible instead of shorter.
+  happening. So a reported call keeps the longer limits of D37, and long waits become visible
+  instead of shorter; only a call that cannot report is held to ten seconds.
 - **Only the library knows what a wait is.** The app sees a slow call; it cannot tell a rate
   limit, with a known end, from a homeserver that has not answered.
 - **Cancelling means different things at different moments.** Before the homeserver has a
@@ -1923,18 +1939,25 @@ await foreach (var sync in loop.RunAsync(cancellationToken))
   once the app asks for the next response, so a slow app is never flooded. Dispatching to
   several subscribers, e.g. for a room state cache or different parts of an app, can be built
   on this stream without changing it.
-- **State lives on the `SyncLoop` object.** `State` is `Stopped`, `Syncing` or `Retrying`, and
+- **State lives on the `SyncLoop` object.** `State` is `Stopped`, `InitialSyncing`, `Syncing`
+  or `Retrying`, and
   `StateChanged` is raised on each change and for each further failed attempt, with the
   error, the attempt number and the delay. It follows the same rules as
   `MatrixClient.SessionChanged` (D14): synchronous, and exceptions from handlers are
   swallowed. A locked account shows as `Retrying` with a `MatrixUserLockedException`, while
   `MatrixClient` itself reports the lock and the unlock (D22).
 - **Errors that may go away are retried inside the loop, indefinitely:** network failures,
-  local timeouts, 5xx responses, `429` and `M_USER_LOCKED`. A `429` reaches the loop only after
-  the transport's own short retries (D37). The wait is 1 second after the first failure,
-  doubling up to 1 minute, as in matrix-nio, unless the homeserver asks for a specific wait
-  (`RetryAfter`, D33). A success resets it. While the account is locked this is the
-  rate-limited polling the spec asks for.
+  local timeouts, 5xx responses, `429` and `M_USER_LOCKED`. The wait is about 1 second after
+  the first failure, doubling up to about 1 minute, as in matrix-nio, unless the homeserver
+  asks for a specific wait (`RetryAfter`, D33), which is kept as asked however long. A success
+  resets it. While the account is locked this is the rate-limited polling the spec asks for.
+- **The loop is the only layer that retries its requests.** They skip the transport's
+  rate-limit retries (D37), so a `429` reaches the loop at once and every wait shows in
+  `StateChanged`, instead of the transport first waiting unseen and the loop then waiting
+  again. A direct `SyncAsync` call is retried by the transport like any other.
+- **Its own backoff has jitter:** each wait is spread at random over the upper half of the
+  doubled value, so clients that lost the homeserver together do not all reconnect at the
+  same moment.
 - **Everything else ends the enumeration by throwing:** `M_UNKNOWN_TOKEN` once the session has
   ended, any other 4xx such as an invalid filter, and a response that cannot be read. These
   would fail the same way on every retry. C# cannot hand errors over as items in the stream as
@@ -1943,8 +1966,18 @@ await foreach (var sync in loop.RunAsync(cancellationToken))
   `Since`, moves to a response's `NextBatch` only when the app asks for the next one, so
   running the loop again after the app stopped mid-response repeats that response instead of
   skipping it.
-- **The first request is an initial sync that answers at once** when there is no `Since`;
-  every later one long-polls for `Timeout`, 30 seconds by default. A filter is passed as is.
+- **The first request is an initial sync** when there is no `Since`; every later one
+  long-polls for `Timeout`, 30 seconds by default. A filter is passed as is.
+- **The initial sync is waited for, and shown.** It asks for no long poll, so the homeserver
+  answers as soon as it has built the response, which can take minutes for a large account.
+  The loop waits up to `InitialSyncTimeout`, ten minutes by default; `Timeout.InfiniteTimeSpan`
+  waits as long as it takes. Meanwhile the state is `InitialSyncing`, entered again each time
+  a failed initial sync is tried again, so the app can tell the user and offer to cancel
+  through `RunAsync`'s token. A retry sends the same parameters, so a homeserver that caches
+  sync responses answers it from the work already done.
+- **Local timeouts of a direct `SyncAsync`:** ten minutes for an initial sync or one with
+  `FullState`; otherwise the long poll plus 30 seconds, and never less than the 100 seconds
+  of other requests.
 - **One run at a time.** A second concurrent `RunAsync` throws `InvalidOperationException`;
   running again after the first ends is fine.
 - **Created with its constructor,** `new SyncLoop(client, options)`, like `MatrixClient` (D8).
@@ -1962,6 +1995,26 @@ await foreach (var sync in loop.RunAsync(cancellationToken))
 - **Retry policy:** the SDKs agree only on retrying indefinitely until the token is
   invalid. matrix-nio's capped exponential backoff, honouring the homeserver's requested wait,
   is simple and predictable.
+- **One layer, with jitter:** retrying in two layers multiplies retries and waits (Microsoft,
+  AWS and Google all advise retrying in one place), and the loop is the layer that can show
+  its waits. Jitter is what AWS and Microsoft advise for backoff; the upper half keeps a floor,
+  so no client retries at once. See the [research appendix](#appendix-research-on-waiting-and-retries).
+- **Ten minutes for the initial sync:** a local timeout only gives up on the request; the
+  homeserver keeps building the response, so giving up early helps nobody. The other SDKs
+  give up after 60 seconds (matrix-rust-sdk), 80 seconds (matrix-js-sdk) or 5 minutes
+  (Trixnity, mautrix-python through aiohttp's default). Ten minutes covers large accounts on
+  slow homeservers while still ending a request whose connection dropped without notice,
+  which an infinite wait would never do; hence infinite is allowed but not the default.
+- **A state for the initial sync:** it is the one wait users see when they first log in, and
+  the homeserver gives no progress (Nielsen: say what is happening when the length is
+  unknown). Only Trixnity has such a state (`INITIAL_SYNC`); it is entered again on retry
+  because "Retrying" would hide that the next attempt may take minutes too.
+- **Retrying with the same parameters:** checked against Synapse with an account in 300 rooms.
+  Repeating an initial sync with the same parameters took 0.05 seconds instead of 0.7, from
+  Synapse's cache. Dropping the connection part way and retrying at once with the same
+  parameters took only the time left, about 0.4 of 0.7 seconds, because Synapse kept building
+  the response and the retry joined it; with different parameters it started again, at 0.9
+  seconds.
 - **Saving `since` after handling:** mautrix-python saves it before handling, so a crash
   mid-batch loses that batch for good. Trixnity saves it after, so a crash repeats the batch.
   Repeating is recoverable and losing is not, so the library recommends saving afterwards,
@@ -1994,6 +2047,8 @@ await foreach (var sync in loop.RunAsync(cancellationToken))
   the user, device, `since`, `timeout`, filter and `full_state`. Repeating an initial sync can
   therefore return stale data, and a test that repeats a request may see an earlier run's
   answer. Continue from `next_batch`, and make test requests differ, e.g. with a unique filter.
+  A request whose client disconnects is not abandoned: Synapse finishes it and caches the
+  result, and an identical request meanwhile waits for it (D34).
 - **Long polls end on device list changes.** Logging another device of the account in or out
   ends a waiting `/sync`, and no filter excludes it, so the long-poll test runs without other
   tests in parallel.
@@ -2125,7 +2180,8 @@ and what the design takes from it.
   happening rather than show a made-up percentage.
 - **Taken:** a threshold of a few seconds for reporting; a report says what the call waits
   for, with its length when known (`ExpectedWait`) and nothing made up when not; every call
-  can be cancelled (D38).
+  can be cancelled (D38). Ten seconds as the most a call waits out rate limits without the
+  app being told (D37).
 
 **Fiona Fui-Hoon Nah, [A study on tolerable waiting time: how long are Web users willing to
 wait?](https://doi.org/10.1080/01449290410001669914) (Behaviour & Information Technology,
@@ -2146,9 +2202,10 @@ wait?](https://doi.org/10.1080/01449290410001669914) (Behaviour & Information Te
 - Honour `Retry-After`; it takes precedence over the client's own backoff. Add jitter.
 - Retry in one layer only: three retries in each of two layers is nine. Never retry
   endlessly; add a retry budget across requests.
-- **Taken:** the threshold covers the whole call (D38); `Retry-After` first (D33, D37). The
-  transport retries only 429, not 5xx, since after a 5xx the request may have been carried out
-  (D37).
+- **Taken:** the threshold, and the limit on unreported waits, cover the whole call (D37,
+  D38); `Retry-After` first and unchanged (D33, D37); jitter on the library's own backoff; one
+  retrying layer for sync requests (D34). The transport retries only 429, not 5xx, since after
+  a 5xx the request may have been carried out (D37).
 
 **Marc Brooker, [Timeouts, retries and backoff with jitter](https://aws.amazon.com/builders-library/timeouts-retries-and-backoff-with-jitter/)
 (Amazon Builders' Library).**
@@ -2158,7 +2215,8 @@ wait?](https://doi.org/10.1080/01449290410001669914) (Behaviour & Information Te
 - Back off exponentially with a cap, and add jitter so clients do not retry in step.
 - Retry at a single point in the stack: five layers retrying three times each multiply load
   by 243. Token buckets can limit retries across requests.
-- **Taken:** a timeout on every request and a cap on the rate-limit wait (D37).
+- **Taken:** a timeout on every request; capped backoff with jitter (D34, D37); sync requests
+  retried by the sync loop alone (D34).
 
 **Google, [Handling Overload](https://sre.google/sre-book/handling-overload/) (Site Reliability
 Engineering, chapter 21).**
@@ -2168,7 +2226,8 @@ Engineering, chapter 21).**
   original load.
 - Only the layer directly above a failing one retries; servers can answer "overloaded; don't
   retry".
-- **Taken:** three retries per request before the error reaches the app (D37).
+- **Taken:** three retries per request before the error reaches the app (D37); retrying in one
+  layer (D34).
 
 **Jeffrey Dean and Luiz André Barroso, [The tail at scale](https://doi.org/10.1145/2408776.2408794)
 (Communications of the ACM, 2013).**

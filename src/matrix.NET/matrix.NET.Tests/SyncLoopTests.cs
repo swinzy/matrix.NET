@@ -30,21 +30,28 @@ public class SyncLoopTests
 
     private static Func<HttpResponseMessage> Throw(Exception exception) => () => throw exception;
 
+    // Never answers, so the request ends only by its local timeout
+    private static readonly Func<HttpResponseMessage> Hanging = () => throw new InvalidOperationException("Never called");
+
+    private static Func<HttpResponseMessage> Hang() => Hanging;
+
     /// <summary>A loop over a scripted homeserver, recording each wait and state change instead of waiting.</summary>
     private sealed class Harness
     {
         public Harness(SyncLoopOptions? options, params Func<HttpResponseMessage>[] responses)
         {
             Handler = new ScriptedHandler(responses);
-            // The transport's own rate-limit retries (D37) are tested elsewhere; here every 429 reaches the loop
-            Client = new MatrixClient(Session, new HttpClient(Handler), new ClientOptions { MaxRateLimitRetries = 0 });
+            // Default options: the loop's requests skip the transport's rate-limit retries (D34)
+            Client = new MatrixClient(Session, new HttpClient(Handler));
             Loop = new SyncLoop(Client, options)
             {
                 Delay = (delay, _) =>
                 {
                     Delays.Add(delay);
                     return Task.CompletedTask;
-                }
+                },
+                // The jitter at its maximum, so delays are the plain backoff
+                Random = () => 1
             };
             Loop.StateChanged += (_, e) => Changes.Add(e);
         }
@@ -145,6 +152,8 @@ public class SyncLoopTests
 
         // Without a requested wait, the backoff applies as for any other failure
         Assert.Equal([TimeSpan.FromMilliseconds(4500), TimeSpan.FromSeconds(120), TimeSpan.FromSeconds(4)], harness.Delays);
+        // Each 429 reached the loop: the transport, with default options, did not wait first (D34)
+        Assert.Equal(4, harness.Handler.Queries.Count);
     }
 
     [Fact]
@@ -158,9 +167,9 @@ public class SyncLoopTests
 
         Assert.Equal(
         [
-            (SyncLoopState.Syncing, 0), (SyncLoopState.Retrying, 1), (SyncLoopState.Retrying, 2),
-            (SyncLoopState.Syncing, 0), (SyncLoopState.Retrying, 1), (SyncLoopState.Syncing, 0),
-            (SyncLoopState.Stopped, 0)
+            (SyncLoopState.InitialSyncing, 0), (SyncLoopState.Syncing, 0), (SyncLoopState.Retrying, 1),
+            (SyncLoopState.Retrying, 2), (SyncLoopState.Syncing, 0), (SyncLoopState.Retrying, 1),
+            (SyncLoopState.Syncing, 0), (SyncLoopState.Stopped, 0)
         ], harness.Changes.Select(c => (c.State, c.Attempt)));
         Assert.All(harness.Changes.Where(c => c.State == SyncLoopState.Retrying), c => Assert.Same(failure, c.Error));
         Assert.Equal([TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(1)], harness.Delays);
@@ -274,14 +283,91 @@ public class SyncLoopTests
     }
 
     [Fact]
+    public async Task RunAsync_ReportsTheInitialSyncUntilItIsDone()
+    {
+        var harness = new Harness(null, Ok("s1"), Ok("s2"));
+
+        await harness.TakeAsync(2);
+
+        Assert.Equal([SyncLoopState.InitialSyncing, SyncLoopState.Syncing, SyncLoopState.Stopped],
+            harness.Changes.Select(c => c.State));
+    }
+
+    [Fact]
+    public async Task RunAsync_FromASavedPositionHasNoInitialSync()
+    {
+        var harness = new Harness(new SyncLoopOptions { Since = "saved" }, Ok("s1"));
+
+        await harness.TakeAsync(1);
+
+        Assert.Equal([SyncLoopState.Syncing, SyncLoopState.Stopped], harness.Changes.Select(c => c.State));
+    }
+
+    [Fact]
+    public async Task RunAsync_ReportsTheInitialSyncAgainWhenRetryingIt()
+    {
+        // A retried initial sync may take minutes again, which "Retrying" would not tell the user
+        var harness = new Harness(null, Throw(new HttpRequestException("Connection reset")), Ok("s1"));
+
+        await harness.TakeAsync(1);
+
+        Assert.Equal(
+            [SyncLoopState.InitialSyncing, SyncLoopState.Retrying, SyncLoopState.InitialSyncing, SyncLoopState.Syncing,
+                SyncLoopState.Stopped],
+            harness.Changes.Select(c => c.State));
+        // Retried with the same parameters, so a homeserver's cached response can answer it
+        Assert.Equal(harness.Handler.Queries[0], harness.Handler.Queries[1]);
+    }
+
+    [Fact]
+    public async Task RunAsync_GivesUpOnAnInitialSyncAfterItsTimeoutAndRetries()
+    {
+        var harness = new Harness(new SyncLoopOptions { InitialSyncTimeout = TimeSpan.FromMilliseconds(50) },
+            Hang(), Ok("s1"));
+
+        await harness.TakeAsync(1);
+
+        var retry = Assert.Single(harness.Changes, c => c.State == SyncLoopState.Retrying);
+        Assert.IsType<TimeoutException>(retry.Error?.InnerException);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-5)]
+    public void Constructor_RejectsAnInitialSyncTimeoutThatIsNotPositive(int seconds)
+    {
+        var client = new MatrixClient(Session, new HttpClient(new ScriptedHandler([])));
+
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            new SyncLoop(client, new SyncLoopOptions { InitialSyncTimeout = TimeSpan.FromSeconds(seconds) }));
+        _ = new SyncLoop(client, new SyncLoopOptions { InitialSyncTimeout = Timeout.InfiniteTimeSpan });
+    }
+
+    [Fact]
     public void GetRetryDelay_DoublesUpToOneMinute()
     {
         var failure = new HttpRequestException();
 
-        var delays = Enumerable.Range(1, 9).Select(n => SyncLoop.GetRetryDelay(failure, n).TotalSeconds);
+        var delays = Enumerable.Range(1, 9).Select(n => SyncLoop.GetRetryDelay(failure, n, 1).TotalSeconds);
 
         Assert.Equal([1, 2, 4, 8, 16, 32, 60, 60, 60], delays);
-        Assert.Equal(TimeSpan.FromMinutes(1), SyncLoop.GetRetryDelay(failure, int.MaxValue));
+        Assert.Equal(TimeSpan.FromMinutes(1), SyncLoop.GetRetryDelay(failure, int.MaxValue, 1));
+    }
+
+    [Fact]
+    public void GetRetryDelay_SpreadsTheBackoffOverItsUpperHalf()
+    {
+        var failure = new HttpRequestException();
+
+        Assert.Equal(TimeSpan.FromSeconds(2), SyncLoop.GetRetryDelay(failure, 3, 0));
+        Assert.Equal(TimeSpan.FromSeconds(3), SyncLoop.GetRetryDelay(failure, 3, 0.5));
+        Assert.Equal(TimeSpan.FromSeconds(30), SyncLoop.GetRetryDelay(failure, 20, 0));
+        // The homeserver's wait is kept as asked
+        Assert.Equal(TimeSpan.FromSeconds(7),
+            SyncLoop.GetRetryDelay(new MatrixException((HttpStatusCode)429, MatrixErrorCodes.LimitExceeded, null)
+            {
+                RetryAfter = TimeSpan.FromSeconds(7)
+            }, 3, 0));
     }
 
     /// <summary>Answers each request with the next scripted response, and records the query sent.</summary>
@@ -291,14 +377,17 @@ public class SyncLoopTests
 
         public List<string> Queries { get; } = [];
 
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
             Queries.Add(request.RequestUri!.Query);
             if (_next == responses.Length)
                 throw new InvalidOperationException("The test sent more requests than it scripted.");
 
-            return Task.FromResult(responses[_next++]());
+            var response = responses[_next++];
+            if (response == Hanging)
+                await Task.Delay(Timeout.Infinite, cancellationToken);
+            return response();
         }
     }
 }

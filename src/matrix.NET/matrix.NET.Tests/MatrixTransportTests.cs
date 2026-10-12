@@ -11,7 +11,7 @@ public class MatrixTransportTests
     private static MatrixTransport CreateTransport(HttpMessageHandler handler, string? accessToken = null,
         string homeserver = "https://matrix.example.org/") =>
         new(new Uri(homeserver), () => new HttpClient(handler), accessToken is null ? null : () => accessToken,
-            rateLimitRetry: new RateLimitRetry(0, TimeSpan.Zero, Task.Delay));
+            rateLimitRetry: new RateLimitRetry(0, TimeSpan.Zero, TimeSpan.Zero, Task.Delay, () => 1));
 
     private static Endpoint WhoAmIAt(AuthRequirement auth) => Endpoint.Baseline(HttpMethod.Get, Path, auth);
 

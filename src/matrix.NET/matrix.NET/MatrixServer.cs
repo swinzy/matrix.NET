@@ -51,7 +51,8 @@ public class MatrixServer : ISharedEndpoints
 
         Options = options ?? new ServerOptions();
         VersionsCache.ValidateLifetime(Options.VersionsCacheLifetime, nameof(options));
-        RateLimitRetry.Validate(Options.MaxRateLimitRetries, Options.MaxRateLimitWait, nameof(options));
+        RateLimitRetry.Validate(Options.MaxRateLimitRetries, Options.MaxRateLimitWait, Options.MaxUnreportedRateLimitWait,
+            nameof(options));
         WaitReporter.ValidateThreshold(Options.WaitReportThreshold, nameof(options));
 
         var automaticDecompression = Options.AutomaticDecompression;

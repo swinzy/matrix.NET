@@ -48,9 +48,19 @@ public sealed class ClientOptions
     /// <summary>
     /// The longest the library waits before a retry (D37). If the homeserver asks for a longer wait,
     /// the exception is thrown at once, with <see cref="MatrixException.RetryAfter"/> saying how long,
-    /// so the app decides. Defaults to one minute.
+    /// so the app decides. Defaults to one minute. A call that cannot report its waits is also held to
+    /// <see cref="MaxUnreportedRateLimitWait"/>.
     /// </summary>
     public TimeSpan MaxRateLimitWait { get; init; } = RateLimitRetry.DefaultMaxWait;
+
+    /// <summary>
+    /// The longest a call that cannot report its waits, because the app passed no
+    /// <see cref="IProgress{T}"/> or turned reporting off, may wait out rate limits in total (D37). A wait
+    /// that would go past it is not taken: the exception is thrown at once with
+    /// <see cref="MatrixException.RetryAfter"/>, so the user is never kept waiting unawares. Defaults to
+    /// ten seconds.
+    /// </summary>
+    public TimeSpan MaxUnreportedRateLimitWait { get; init; } = RateLimitRetry.DefaultMaxUnreportedWait;
 
     /// <summary>
     /// How long a call may take before its waits are reported to the <see cref="IProgress{T}"/> passed to
@@ -66,5 +76,9 @@ public sealed class ClientOptions
     // Replaced by tests, so rate-limit retries do not really wait
     internal Func<TimeSpan, CancellationToken, Task> RateLimitDelay { get; init; } = Task.Delay;
 
-    internal RateLimitRetry CreateRateLimitRetry() => new(MaxRateLimitRetries, MaxRateLimitWait, RateLimitDelay);
+    // Replaced by tests, so the backoff's jitter is predictable
+    internal Func<double> BackoffRandom { get; init; } = Backoff.SharedRandom;
+
+    internal RateLimitRetry CreateRateLimitRetry() =>
+        new(MaxRateLimitRetries, MaxRateLimitWait, MaxUnreportedRateLimitWait, RateLimitDelay, BackoffRandom);
 }
