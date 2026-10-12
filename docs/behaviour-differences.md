@@ -1,8 +1,9 @@
 # Behaviour Differences from Other SDKs
 
-Where matrix.NET behaves differently from other Matrix SDKs because it follows a specific
-reading of the spec. It is meant for app developers who compare matrix.NET with another SDK
-or with Element and notice a difference.
+Where matrix.NET behaves differently from other Matrix SDKs, because it reads the spec in a
+specific way, or makes its own choice where the spec leaves the behaviour open. It is meant
+for app developers who compare matrix.NET with another SDK or with Element and notice a
+difference.
 
 It is not an assessment of the other SDKs. The spec leaves room for interpretation, some of
 its wording was clarified after those SDKs were written, and their choices often reflect
@@ -11,7 +12,7 @@ data. Each entry therefore also says what the other approach does well.
 
 Each entry gives:
 
-- the spec text, quoted;
+- the spec text, quoted, and whether it settles the question or leaves it open;
 - what matrix.NET does, with the design decision in [technical.md](technical.md);
 - what the other SDKs checked do, and where in their source;
 - the trade-off, and what an app can do if it prefers the other behaviour.
@@ -24,6 +25,7 @@ the feature.
 - [Server discovery looks up the hostname without the port](#server-discovery-looks-up-the-hostname-without-the-port)
 - [A failed token refresh takes `soft_logout` from the refresh response](#a-failed-token-refresh-takes-soft_logout-from-the-refresh-response)
 - [Feature detection uses version ranges](#feature-detection-uses-version-ranges)
+- [Rate-limited requests are retried a few times, for short waits only](#rate-limited-requests-are-retried-a-few-times-for-short-waits-only)
 
 ## Server discovery looks up the hostname without the port
 
@@ -128,3 +130,43 @@ an older one had.
 - Ranges also cover a server that lists only some versions, and represent removals, at the
   cost of recording when each feature was added and removed.
 - With Synapse, both give the same answers.
+
+## Rate-limited requests are retried a few times, for short waits only
+
+Differs from all SDKs checked, in the combination of limits; each part on its own is shared
+with some of them.
+
+**Spec** (Client-Server API, Standard error response, `M_LIMIT_EXCEEDED`):
+
+> Too many requests have been sent in a short period of time. Wait a while then try again.
+
+and (Rate limiting) a rate-limited request is one that "is refused due to rate limiting".
+The spec says to wait, and how long through `Retry-After`, but leaves whether a library or
+an app does the waiting open.
+
+**matrix.NET:** every request refused with 429 or `M_LIMIT_EXCEEDED` is retried up to 3
+times, waiting as the homeserver asks, or 1, 2 and 4 seconds. If it asks for longer than one
+minute, the error is thrown at once with `RetryAfter`. Other errors are not retried. Both
+limits are options, and retrying can be turned off (D37).
+
+**Other SDKs:**
+
+| SDK | Behaviour | Where |
+|---|---|---|
+| matrix-rust-sdk | Retries every request by default, without a count limit but for at most 15 minutes in total; also retries several 5xx statuses | `http_client/native.rs`, `error.rs` (`RetryKind`), `config/request.rs` |
+| matrix-js-sdk | No retry in the HTTP layer; the event-sending scheduler and some other callers retry up to 4 times | `http-api/utils.ts` (`calculateRetryBackoff`), `scheduler.ts` |
+| matrix-nio | Retries every request by default, without limit, waiting `retry_after_ms` or 5 seconds | `client/async_client.py` (`_send`, `max_limit_exceeded`) |
+| mautrix-python | Does not retry rate-limited requests | `api.py` (`request`) |
+| Trixnity | Retries every request up to 3 times, waiting at least as long as `Retry-After` asks | `MatrixClientServerApiBaseClient.kt` (Ktor `HttpRequestRetry`) |
+
+**Trade-off:**
+
+- Retrying until the homeserver accepts, as matrix-rust-sdk and matrix-nio do, means a call
+  succeeds whenever it eventually can, and the app never handles a rate limit itself.
+- Not retrying in the HTTP layer, as matrix-js-sdk and mautrix-python do, keeps every call's
+  duration predictable and leaves all timing to the app.
+- matrix.NET takes short waits itself and leaves long ones to the app: a call stalls for at
+  most about three minutes with the defaults, and a five-minute login limit, as Synapse sets
+  after repeated failed logins, reaches the app at once.
+- An app that prefers either of the other behaviours can set `MaxRateLimitRetries` to 0 and
+  retry itself, or raise `MaxRateLimitRetries` and `MaxRateLimitWait`.

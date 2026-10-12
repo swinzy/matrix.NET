@@ -36,7 +36,8 @@ public class SyncLoopTests
         public Harness(SyncLoopOptions? options, params Func<HttpResponseMessage>[] responses)
         {
             Handler = new ScriptedHandler(responses);
-            Client = new MatrixClient(Session, new HttpClient(Handler));
+            // The transport's own rate-limit retries (D37) are tested elsewhere; here every 429 reaches the loop
+            Client = new MatrixClient(Session, new HttpClient(Handler), new ClientOptions { MaxRateLimitRetries = 0 });
             Loop = new SyncLoop(Client, options)
             {
                 Delay = (delay, _) =>

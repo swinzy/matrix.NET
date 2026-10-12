@@ -103,13 +103,14 @@ public class MatrixClient : ISharedEndpoints
                 "ClientOptions.AutoRefreshToken to false to manage refresh in the app.", nameof(options));
 
         VersionsCache.ValidateLifetime(Options.VersionsCacheLifetime, nameof(options));
+        RateLimitRetry.Validate(Options.MaxRateLimitRetries, Options.MaxRateLimitWait, nameof(options));
 
         var automaticDecompression = Options.AutomaticDecompression;
         _shared = new SharedEndpoints(ct => InvokeAsync<VersionsResponse>(Endpoints.Versions, ct),
             Options.VersionsCacheLifetime, Options.TimeProvider);
         _transport = new MatrixTransport(session.Homeserver,
             httpClientSource ?? (() => MatrixTransport.GetSharedClient(automaticDecompression)),
-            () => _session.AccessToken, () => _shared.Versions.Cached);
+            () => _session.AccessToken, () => _shared.Versions.Cached, Options.CreateRateLimitRetry());
     }
 
     /// <summary>The lifecycle state of the client.</summary>

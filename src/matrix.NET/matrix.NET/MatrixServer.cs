@@ -51,12 +51,13 @@ public class MatrixServer : ISharedEndpoints
 
         Options = options ?? new ServerOptions();
         VersionsCache.ValidateLifetime(Options.VersionsCacheLifetime, nameof(options));
+        RateLimitRetry.Validate(Options.MaxRateLimitRetries, Options.MaxRateLimitWait, nameof(options));
 
         var automaticDecompression = Options.AutomaticDecompression;
         _shared = new SharedEndpoints(FetchVersionsAsync, Options.VersionsCacheLifetime, Options.TimeProvider);
         _transport = new MatrixTransport(homeserver,
             httpClientSource ?? (() => MatrixTransport.GetSharedClient(automaticDecompression)),
-            cachedVersions: () => _shared.Versions.Cached);
+            cachedVersions: () => _shared.Versions.Cached, rateLimitRetry: Options.CreateRateLimitRetry());
     }
 
     /// <summary>The options this server was created with.</summary>

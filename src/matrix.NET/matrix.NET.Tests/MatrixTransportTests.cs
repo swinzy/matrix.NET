@@ -7,9 +7,11 @@ public class MatrixTransportTests
 {
     private const string Path = "_matrix/client/v3/account/whoami";
 
+    // Without rate-limit retries, which RateLimitRetryTests cover, so each 429 is thrown at once
     private static MatrixTransport CreateTransport(HttpMessageHandler handler, string? accessToken = null,
         string homeserver = "https://matrix.example.org/") =>
-        new(new Uri(homeserver), () => new HttpClient(handler), accessToken is null ? null : () => accessToken);
+        new(new Uri(homeserver), () => new HttpClient(handler), accessToken is null ? null : () => accessToken,
+            rateLimitRetry: new RateLimitRetry(0, TimeSpan.Zero, Task.Delay));
 
     private static Endpoint WhoAmIAt(AuthRequirement auth) => Endpoint.Baseline(HttpMethod.Get, Path, auth);
 

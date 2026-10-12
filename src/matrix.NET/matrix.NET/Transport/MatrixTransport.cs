@@ -36,6 +36,7 @@ internal sealed class MatrixTransport
     private readonly Func<HttpClient> _clientSource;
     private readonly Func<string?>? _accessTokenSource;
     private readonly Func<VersionsResponse?>? _cachedVersions;
+    private readonly RateLimitRetry _rateLimitRetry;
 
     /// <param name="homeserver">Base URL of the homeserver; may include a path.</param>
     /// <param name="clientSource">
@@ -48,19 +49,23 @@ internal sealed class MatrixTransport
     /// Returns the cached <c>/versions</c>, if any, to explain why an endpoint seems to be missing.
     /// Never fetches (D26).
     /// </param>
+    /// <param name="rateLimitRetry">How rate-limited requests are retried; the defaults when omitted (D37).</param>
     public MatrixTransport(Uri homeserver, Func<HttpClient>? clientSource = null,
-        Func<string?>? accessTokenSource = null, Func<VersionsResponse?>? cachedVersions = null)
+        Func<string?>? accessTokenSource = null, Func<VersionsResponse?>? cachedVersions = null,
+        RateLimitRetry? rateLimitRetry = null)
     {
         Homeserver = WithTrailingSlash(homeserver);
         _clientSource = clientSource ?? (() => SharedClient);
         _accessTokenSource = accessTokenSource;
         _cachedVersions = cachedVersions;
+        _rateLimitRetry = rateLimitRetry ?? RateLimitRetry.Default;
     }
 
     public Uri Homeserver { get; }
 
     /// <summary>
-    /// Sends a request and deserialises the response. <paramref name="timeout"/> overrides
+    /// Sends a request and deserialises the response, retrying it if the homeserver refuses it for rate
+    /// limiting (D37). <paramref name="timeout"/> applies to each attempt, overrides
     /// <see cref="DefaultTimeout"/>, and <see cref="Timeout.InfiniteTimeSpan"/> disables it. A timeout
     /// throws <see cref="TaskCanceledException"/> with an inner <see cref="TimeoutException"/>.
     /// </summary>
@@ -76,6 +81,22 @@ internal sealed class MatrixTransport
     private async Task<TResponse> SendCoreAsync<TResponse>(Endpoint endpoint, object? body, Type? bodyType,
         TimeSpan? timeout, CancellationToken cancellationToken)
     {
+        for (var retries = 0;; retries++)
+        {
+            try
+            {
+                return await SendOnceAsync<TResponse>(endpoint, body, bodyType, timeout, cancellationToken);
+            }
+            catch (MatrixException e) when (_rateLimitRetry.GetWait(e, retries) is { } wait)
+            {
+                await _rateLimitRetry.Delay(wait, cancellationToken);
+            }
+        }
+    }
+
+    private async Task<TResponse> SendOnceAsync<TResponse>(Endpoint endpoint, object? body, Type? bodyType,
+        TimeSpan? timeout, CancellationToken cancellationToken)
+    {
         var effectiveTimeout = timeout ?? DefaultTimeout;
         using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeoutSource.CancelAfter(effectiveTimeout);
@@ -83,7 +104,7 @@ internal sealed class MatrixTransport
         try
         {
             // Requests are built from their parts rather than reused, so they can be rebuilt
-            // when retrying after a token refresh
+            // when retrying after a rate limit or a token refresh
             using var request = CreateRequest(endpoint, body, bodyType);
             using var response = await _clientSource().SendAsync(request, timeoutSource.Token);
             await EnsureSuccessAsync(endpoint, response, request.Headers.Authorization?.Parameter, timeoutSource.Token);

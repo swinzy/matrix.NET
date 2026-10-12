@@ -40,8 +40,8 @@ public class MatrixException : Exception
     /// </summary>
     /// <remarks>
     /// Read from the <c>Retry-After</c> header, or from the deprecated <c>retry_after_ms</c> property
-    /// that homeservers older than spec v1.10 send instead. Never negative. The library does not retry
-    /// by itself; waiting and retrying is up to the caller.
+    /// that homeservers older than spec v1.10 send instead. Never negative. A rate-limited request has
+    /// already been retried as the options allow by the time this is thrown (D37).
     /// </remarks>
     public TimeSpan? RetryAfter { get; init; }
 }

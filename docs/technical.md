@@ -33,6 +33,7 @@ others. Neither is better in general; they suit different priorities.
 6. [Appendix: session design in other SDKs](#appendix-session-design-in-other-sdks)
 7. [Appendix: sync loops in other SDKs](#appendix-sync-loops-in-other-sdks)
 8. [Appendix: server discovery in other SDKs](#appendix-server-discovery-in-other-sdks)
+9. [Appendix: rate limiting in other SDKs](#appendix-rate-limiting-in-other-sdks)
 
 ## 1. Project layout
 
@@ -57,9 +58,9 @@ and is not part of the repository.
 | Type | Role |
 |---|---|
 | `MatrixServer` | Unauthenticated endpoints of a homeserver: supported login types, login and the shared endpoints; static `DiscoverAsync` (D36) |
-| `ServerOptions` | Options for `MatrixServer`: automatic decompression (D25) |
+| `ServerOptions` | Options for `MatrixServer`: automatic decompression (D25), `/versions` cache lifetime (D25), rate-limit retries (D37) |
 | `MatrixClient` | Authenticated endpoints through a `MatrixSession`: `WhoAmIAsync`, `LogoutAsync`, `SyncAsync`, `GetJoinedRoomsAsync`, `CreateRoomAsync`, `JoinRoomAsync`, `LeaveRoomAsync`, `SendMessageAsync`, `SendEventAsync`, `RedactEventAsync` and the shared endpoints so far; lifecycle `State` and `SessionChanged` (D14, D21); automatic token refresh (D12) |
-| `ClientOptions` | Options for `MatrixClient`: automatic token refresh, refresh handler, automatic decompression |
+| `ClientOptions` | Options for `MatrixClient`: automatic token refresh, refresh handler, automatic decompression, `/versions` cache lifetime (D25), rate-limit retries (D37) |
 | `ISessionRefreshHandler` / `DiscardingSessionRefreshHandler` | Saves refreshed sessions before their tokens are used; the discarding one saves nothing (D23) |
 | `WhoAmIResponse` | Response of `GET /account/whoami` |
 | `LoginRequest` | Body of `POST /login` |
@@ -71,6 +72,7 @@ and is not part of the repository.
 | `Transport.Discovery` (internal) | The discovery steps, including taking the hostname from a server name (D36) |
 | `LoginFlow` | One entry of `GET /login`'s `flows` |
 | `VersionsResponse` | Response of `GET /versions`, read-only as it is cached: supported spec versions and unstable features, `MeetsMinimumVersion` (D24) and `Supports(feature)` (D26) |
+| `Transport.RateLimitRetry` (internal) | Whether and how long to wait before retrying a rate-limited request (D37) |
 | `Transport.VersionsCache` (internal) | One instance's cached `/versions`, with its lifetime (D25) |
 | `IIdentifier` / `UserIdentifier` | User identifier objects (`m.id.user`) |
 | `MatrixException` | A Matrix error response (`errcode`, `error` as `ServerMessage`) or a non-Matrix HTTP failure; `RetryAfter` when the homeserver asks for a wait (D33) |
@@ -408,8 +410,9 @@ Details:
   tried next. `retry_after_ms` is read as a number that may have a fraction, so a lenient
   homeserver's `1500.5` does not make the whole error body unreadable. A date in the past
   means no wait, and a huge value is capped instead of overflowing `TimeSpan`.
-- **The library does not wait or retry by itself.** It only reports what the homeserver asked
-  for. The sync loop uses it; ordinary endpoint calls leave retrying to the app.
+- **Short waits are taken by the library itself.** A rate-limited request is retried a few
+  times when the wait is short (D37); `RetryAfter` reaches the app when the retries are used
+  up or the homeserver asks for a longer wait. The sync loop (D34) uses it too.
 
 Checked against Synapse with its default rate limits, by failing logins until it answered
 `429`:
@@ -432,6 +435,48 @@ So both sources are needed: the header alone would miss every wait from older ho
 **Why the header first:** the spec now prefers it, and when both are present, as on current
 Synapse, they agree up to the header's rounding up to whole seconds, which errs on the side of
 waiting slightly longer.
+
+#### D37. Rate-limited requests are retried a few times, for short waits only (Decided)
+
+When the homeserver refuses a request for rate limiting, the transport waits and sends it
+again, for every endpoint, before throwing:
+
+- **What counts:** status 429, or the error code `M_LIMIT_EXCEEDED` with any status, since a
+  proxy may answer 429 without a Matrix body.
+- **How long:** as the homeserver asks (`RetryAfter`, D33), or 1, 2 and 4 seconds when it does
+  not say.
+- **Up to 3 retries** (`MaxRateLimitRetries`). The last refusal is then thrown with its
+  `RetryAfter`.
+- **Only for short waits:** if the homeserver asks for longer than `MaxRateLimitWait`, one
+  minute by default, the exception is thrown at once, so the app decides whether to wait.
+- **Nothing else is retried:** 5xx responses and network failures still throw at once. The
+  sync loop retries those itself (D34).
+- Both settings are on `ClientOptions` and `ServerOptions`; `MaxRateLimitRetries = 0` turns
+  retrying off. The wait honours the caller's `CancellationToken`, and the request timeout
+  applies to each attempt rather than the whole call.
+
+Checked against Synapse with its default limits:
+
+- Sending 14 messages in a row: the burst allowance ran out after the ninth request, after
+  which each send waited about 5 seconds as asked and succeeded. The app saw no errors.
+- Failing logins: a short wait was retried, and the next refusal asked for 301 seconds, which
+  was thrown at once with `RetryAfter = 00:05:01`.
+
+**Why:**
+
+- **Retrying a rate-limited request is safe for every endpoint.** The spec describes it as a
+  request "refused due to rate limiting": it was not executed, so sending it again cannot
+  duplicate anything, with or without a transaction ID. This is what sets 429 apart from 5xx
+  responses and network failures, after which the request may have been executed.
+- **Short waits are an expected part of normal use,** e.g. sending several messages in a row.
+  Leaving every one to the app would make each app write the same retry loop.
+- **Long waits are a decision.** Synapse asks for over five minutes after repeated failed
+  logins; a call that silently stalls that long looks like a hang. Above the limit the app
+  gets the error and the wait, and can tell the user.
+- **Bounded by count as well as length,** so a homeserver that keeps refusing cannot hold a
+  call indefinitely: at most about 3 minutes with the defaults.
+- **The defaults** follow Trixnity's 3 retries, and a one-minute cap close to matrix-rust-sdk's
+  maximum backoff (see the appendix and [behaviour-differences.md](behaviour-differences.md)).
 
 ### 3.2 Authenticated session design
 
@@ -1807,10 +1852,11 @@ await foreach (var sync in loop.RunAsync(cancellationToken))
   swallowed. A locked account shows as `Retrying` with a `MatrixUserLockedException`, while
   `MatrixClient` itself reports the lock and the unlock (D22).
 - **Errors that may go away are retried inside the loop, indefinitely:** network failures,
-  local timeouts, 5xx responses, `429` and `M_USER_LOCKED`. The wait is 1 second after the
-  first failure, doubling up to 1 minute, as in matrix-nio, unless the homeserver asks for a
-  specific wait (`RetryAfter`, D33). A success resets it. While the account is locked this is
-  the rate-limited polling the spec asks for.
+  local timeouts, 5xx responses, `429` and `M_USER_LOCKED`. A `429` reaches the loop only after
+  the transport's own short retries (D37). The wait is 1 second after the first failure,
+  doubling up to 1 minute, as in matrix-nio, unless the homeserver asks for a specific wait
+  (`RetryAfter`, D33). A success resets it. While the account is locked this is the
+  rate-limited polling the spec asks for.
 - **Everything else ends the enumeration by throwing:** `M_UNKNOWN_TOKEN` once the session has
   ended, any other 4xx such as an invalid filter, and a response that cannot be read. These
   would fail the same way on every retry. C# cannot hand errors over as items in the stream as
@@ -1973,3 +2019,15 @@ Summary of source research from October 2026, for D36.
 | mautrix-python | Static `discover(domain)` | Returns `None` | A `WellKnownError` subclass per cause | Yes | Kept | Ignored | Opt-in (`update_hs_url`, off by default) |
 | matrix-nio | Raw `discovery_info()` against the client's own homeserver | — | — | No | — | Returned | Ignored |
 | Trixnity | `serverDiscovery()` extension | Falls back to the server name | Same fallback for any failure | Yes | Kept | Ignored | Modelled, not used |
+
+## Appendix: rate limiting in other SDKs
+
+Summary of source research from October 2026, for D37.
+
+| SDK | By default | Where | What is retried | Wait | Limit |
+|---|---|---|---|---|---|
+| matrix-rust-sdk | On | HTTP layer, every request | 429 and `M_LIMIT_EXCEEDED`; 408, 500, 502, 503, 504, 507 and 520; network failures only with a retry limit set | The homeserver's delay (not an HTTP date), otherwise exponential from 0.5 seconds up to 60 | Unlimited count, 15 minutes in total per request; configurable per request (`RequestConfig`) |
+| matrix-js-sdk | Off in the HTTP layer | Specific callers: the event-sending scheduler, to-device messages, crypto requests, account data | 429 and 5xx; other 4xx and client timeouts are not | The homeserver's delay, otherwise 2, 4, 8 and 16 seconds | 4 retries |
+| matrix-nio | On | HTTP layer, every request | 429, and timeouts | `retry_after_ms`, otherwise 5 seconds | Unlimited by default (`max_limit_exceeded`, `max_timeouts`) |
+| mautrix-python | Off (`default_retry_count = 0`) | HTTP layer | When enabled: 502, 503, 504 and connection errors; never 429 | 4 seconds, doubling | The configured count |
+| Trixnity | On | HTTP layer (Ktor `HttpRequestRetry`), every request | 429 only | The larger of exponential backoff up to 30 seconds with jitter, and the `Retry-After` header; `retry_after_ms` is not read | 3 retries |

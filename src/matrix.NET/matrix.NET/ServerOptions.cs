@@ -24,6 +24,25 @@ public sealed class ServerOptions
     /// </summary>
     public TimeSpan VersionsCacheLifetime { get; init; } = VersionsCache.DefaultLifetime;
 
+    /// <summary>
+    /// How many times a request the homeserver refused for rate limiting (429, <c>M_LIMIT_EXCEEDED</c>) is
+    /// retried before its <see cref="MatrixException"/> is thrown (D37). Defaults to 3; 0 turns retrying
+    /// off. A refused request was not executed, so retrying is safe for every endpoint.
+    /// </summary>
+    public int MaxRateLimitRetries { get; init; } = RateLimitRetry.DefaultMaxRetries;
+
+    /// <summary>
+    /// The longest the library waits before a retry (D37). If the homeserver asks for a longer wait,
+    /// the exception is thrown at once, with <see cref="MatrixException.RetryAfter"/> saying how long,
+    /// so the app decides. Defaults to one minute.
+    /// </summary>
+    public TimeSpan MaxRateLimitWait { get; init; } = RateLimitRetry.DefaultMaxWait;
+
     // Replaced by tests, to expire the cache without waiting
     internal TimeProvider TimeProvider { get; init; } = TimeProvider.System;
+
+    // Replaced by tests, so rate-limit retries do not really wait
+    internal Func<TimeSpan, CancellationToken, Task> RateLimitDelay { get; init; } = Task.Delay;
+
+    internal RateLimitRetry CreateRateLimitRetry() => new(MaxRateLimitRetries, MaxRateLimitWait, RateLimitDelay);
 }
